@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+*.dist-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Data / outputs
+lancedb/
+pdfs/
+*.pdf
+*.log
+*.db
+*.sqlite3
+
+# Rust
+rag_rust/target/
+**/target/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
