@@ -1,4 +1,4 @@
-﻿# Agentic-RAG-Rust-Core-PFE-26
+# Agentic-RAG-Rust-Core-PFE-26
 
 Minimal RAG prototype that loads PDFs, chunks text in Rust, embeds with Ollama,
 stores vectors in LanceDB, and answers questions from retrieved context.
