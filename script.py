@@ -111,19 +111,24 @@ def get_or_create_table():
       return db.open_table(TABLE_NAME)
     except Exception:
       pass
+  # ÉTAPE 1 : Batch Embedding (Une seule requête HTTP au lieu de 5)
+  # Ollama traite la liste beaucoup plus vite que les appels individuels
+  response = ollama.embed(model=EMBEDDING_MODEL, input=dataset)
+  embeddings = response['embeddings']
 
-  # Build (or rebuild) the table.
-  first_embedding = ollama.embed(model=EMBEDDING_MODEL, input=dataset[0])['embeddings'][0]
+    # ÉTAPE 2 : Préparation des données en une liste de dictionnaires
+  data = [
+      {"id": i, "text": chunk, "vector": embedding}
+      for i, (chunk, embedding) in enumerate(zip(dataset, embeddings))
+  ]
+
+  # ÉTAPE 3 : Création et insertion massive
   table = db.create_table(
-    TABLE_NAME,
-    data=[{"id": 0, "text": dataset[0], "vector": first_embedding}],
-    mode="overwrite" if REBUILD_DB else "create",
+      TABLE_NAME,
+      data=data,
+      mode="overwrite" if REBUILD_DB else "create",
   )
 
-  for i, chunk in enumerate(dataset[1:], start=1):
-    embedding = ollama.embed(model=EMBEDDING_MODEL, input=chunk)['embeddings'][0]
-    table.add([{"id": i, "text": chunk, "vector": embedding}])
-    print(f'Added chunk {i+1}/{len(dataset)} to the database')
 
   return table
 
