@@ -6,6 +6,9 @@ import requests
 import os
 from dotenv import load_dotenv
 
+# load search tool
+from agent import search
+
 # --- STAGE 1: File I/O ---
 start_io = time.time()
 with open("documents.txt", "r") as file:
@@ -61,7 +64,7 @@ print("table head: ", table.head() )
 
 
 # Searching
-query = "what is the Great Wall ? "
+query = "what is the person's name that was mentioned ?"
 query_embedding = model.encode(query)
 print(f"query :{query}\n query_embedding: {query_embedding.shape  }")
 
@@ -74,7 +77,9 @@ context = "\n\n".join(context_list)
 
 question = query 
 
-proompt = f"answer the question based on the context below.\n\nContext: \n{context}\n Question:\n{question}"
+#proompt = f"answer the question using the available tools \n\nContext: \n{context}\n Question:\n{question}"
+# failed !proompt = f"answer the question using the available tools \n\n Question:\n{question}"
+proompt = f"answer the question using the available tools ( hint: use the tool to look for author , the database is small so any search in the direction of the hint will be enough )\n\n Question:\n{question}"
 
 print(f"proompt: \n{proompt}")
 
@@ -82,6 +87,27 @@ print(f"proompt: \n{proompt}")
 load_dotenv()
 api_key = os.getenv("API_KEY") 
 model = os.getenv("MODEL")
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "Search in the vector database for semantic similarity",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "the text that will be converted to vector and search the vector db using it"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+
 header = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -91,10 +117,16 @@ body = {
         "model": model,
         "messages": [
             {"role": "user", "content": proompt}
-         ]
+         ],
+        "tools": tools,
+        "tool_choice": "auto"
 }
+
+
+
 
 url  = "https://openrouter.ai/api/v1/chat/completions"
 response = requests.post(url, json=body, headers=header)
 print("\n\nResponse status: ", response.status_code)
 print("\n\nResponse json: ", response.json())
+
