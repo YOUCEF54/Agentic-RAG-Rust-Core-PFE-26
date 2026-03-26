@@ -1,4 +1,4 @@
-"""Agentic RAG demo using PDFs from the local `pdfs` folder.
+"""Minimal RAG demo using PDFs from the local `pdfs` folder.
 
 Usage:
 1) Put your PDFs in the `pdfs` folder (or list them in `PDF_PATHS`).
@@ -6,7 +6,6 @@ Usage:
 3) Build/install the Rust extension in `rag_rust` (e.g. `maturin develop`)
 4) Run: `python script.py`
 """
-import json
 import time
 from pathlib import Path
 
@@ -31,7 +30,6 @@ CHUNK_OVERLAP = 100
 
 # Runtime options
 RUN_LLM = True
-RUN_AGENT = True
 RUN_BENCHMARK = False
 BENCHMARK_ITERS = 20
 BENCHMARK_QUERIES = [
@@ -39,9 +37,6 @@ BENCHMARK_QUERIES = [
   "What are the key conclusions?",
   "List important definitions.",
 ]
-TOP_K = 3
-AGENT_MAX_STEPS = 4
-AGENT_TEMPERATURE = 0.2
 
 # Record the start time
 start_time = time.perf_counter()
@@ -146,92 +141,32 @@ def retrieve(query, top_n=3):
   query_embedding = ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0]
   return table.search(query_embedding).limit(top_n).to_arrow().to_pylist()
 
-def format_retrieved(rows):
-  lines = []
-  for row in rows:
-    distance = row.get('_distance', None)
-    if distance is None:
-      lines.append(f' - {row["text"]}')
-    else:
-      lines.append(f' - (distance: {distance:.4f}) {row["text"]}')
-  return '\n'.join(lines)
-
-AGENT_SYSTEM_PROMPT = """You are a helpful RAG agent.
-You have one tool: retrieve(query) which returns relevant context from the PDFs.
-When you need more information, respond ONLY with JSON:
-{"action": "retrieve", "query": "..."}
-When you are ready to answer, respond ONLY with JSON:
-{"action": "answer", "final": "..."}
-Use the retrieved context to answer, and do not make up facts.
-"""
-
-def parse_agent_action(text):
-  try:
-    return json.loads(text)
-  except Exception:
-    start = text.find('{')
-    end = text.rfind('}')
-    if start != -1 and end != -1 and end > start:
-      try:
-        return json.loads(text[start:end + 1])
-      except Exception:
-        return None
-  return None
-
-def agentic_answer(question):
-  messages = [
-    {'role': 'system', 'content': AGENT_SYSTEM_PROMPT},
-    {'role': 'user', 'content': question},
-  ]
-
-  for step in range(AGENT_MAX_STEPS):
-    response = ollama.chat(
-      model=LANGUAGE_MODEL,
-      messages=messages,
-      stream=False,
-      options={'temperature': AGENT_TEMPERATURE},
-    )
-    content = response['message']['content'].strip()
-    action = parse_agent_action(content)
-
-    if not action or 'action' not in action:
-      return content
-
-    if action['action'] == 'retrieve':
-      query = action.get('query', '').strip()
-      if not query:
-        return "I need a query to retrieve more context."
-      query_start = time.perf_counter()
-      rows = retrieve(query, top_n=TOP_K)
-      query_end = time.perf_counter()
-      print(f'Retrieval time: {query_end - query_start:.2f}s')
-
-      context_text = format_retrieved(rows) if rows else ' - (no results)'
-      messages.append({'role': 'assistant', 'content': content})
-      messages.append({'role': 'system', 'content': f'Retrieved context:\n{context_text}'})
-      continue
-
-    if action['action'] == 'answer':
-      return action.get('final', '').strip() or "No answer provided."
-
-    return "Unsupported agent action."
-
-  return "Reached the maximum number of agent steps without a final answer."
-
 input_query = input('Ask me a question: ').strip()
 if not input_query:
   input_query = "What is this document about?"
+query_start = time.perf_counter()
+retrieved_knowledge = retrieve(input_query)
+query_end = time.perf_counter()
+print(f'Retrieval time: {query_end - query_start:.2f}s')
 
-if RUN_LLM and RUN_AGENT:
-  print('Chatbot response:')
-  print(agentic_answer(input_query))
-elif RUN_LLM:
-  retrieved_knowledge = retrieve(input_query, top_n=TOP_K)
-  context_text = format_retrieved(retrieved_knowledge)
+print('Retrieved knowledge:')
+for row in retrieved_knowledge:
+    distance = row.get('_distance', None)
+    if distance is None:
+      print(f' - {row["text"]}')
+    else:
+      print(f' - (distance: {distance:.4f}) {row["text"]}')
+
+# 1. Prepare the context string outside the f-string
+context_text = '\n'.join([f' - {row["text"]}' for row in retrieved_knowledge])
+
+# 2. Use that variable inside the instruction prompt
+if RUN_LLM:
   instruction_prompt = f'''You are a helpful chatbot.
 Use only the following pieces of context to answer the question. Don't make up any new information:
 {context_text}
 '''
+
   stream = ollama.chat(
     model=LANGUAGE_MODEL,
     messages=[
@@ -240,6 +175,8 @@ Use only the following pieces of context to answer the question. Don't make up a
     ],
     stream=True,
   )
+
+  # print the response from the chatbot in real-time
   print('Chatbot response:')
   for chunk in stream:
     print(chunk['message']['content'], end='', flush=True)
