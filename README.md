@@ -1,12 +1,13 @@
 # Agentic-RAG-Rust-Core-PFE-26
 
-Minimal RAG prototype that loads PDFs, chunks text in Rust, embeds with Ollama,
-stores vectors in LanceDB, and answers questions from retrieved context.
+Agentic RAG prototype that loads PDFs, chunks text in Rust, embeds with Ollama,
+stores vectors in LanceDB, and answers questions by iteratively retrieving context.
 
 **Features**
 - PDF ingestion from `pdfs/`
 - Rust-based smart chunking (`rag_rust`)
 - Vector search with LanceDB
+- Agentic loop that decides when to retrieve
 - Optional LLM response generation with Ollama
 
 **Project Structure**
@@ -31,3 +32,4 @@ stores vectors in LanceDB, and answers questions from retrieved context.
 - If you do not have Ollama running, the retrieval still works but LLM output
   will fail.
 - To rebuild the vector DB, set `REBUILD_DB = True` in `script.py`.
+- To disable the agentic loop, set `RUN_AGENT = False` in `script.py`.
