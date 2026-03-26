@@ -1,5 +1,3 @@
 ollama
 lancedb
-pypdf
-PyPDF2
 maturin

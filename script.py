@@ -2,7 +2,7 @@
 
 Usage:
 1) Put your PDFs in the `pdfs` folder (or list them in `PDF_PATHS`).
-2) Install dependencies: `pip install ollama lancedb pypdf`
+2) Install dependencies: `pip install ollama lancedb`
 3) Build/install the Rust extension in `rag_rust` (e.g. `maturin develop`)
 4) Run: `python script.py`
 """
@@ -41,6 +41,8 @@ BENCHMARK_QUERIES = [
 # Record the start time
 start_time = time.perf_counter()
 
+
+
 def load_pdf_texts():
   paths = []
   if PDF_PATHS:
@@ -54,26 +56,23 @@ def load_pdf_texts():
     raise FileNotFoundError(
       "No PDFs found. Set PDF_PATHS or put PDFs in the 'pdfs' folder."
     )
-  try:
-    from pypdf import PdfReader
-  except Exception:
-    try:
-      from PyPDF2 import PdfReader
-    except Exception as exc:
-      raise ImportError(
-        "Missing PDF dependency. Install one of: pypdf, PyPDF2"
-      ) from exc
 
   texts = []
   for path in paths:
-    reader = PdfReader(str(path))
-    for i, page in enumerate(reader.pages):
-      if MAX_PAGES is not None and i >= MAX_PAGES:
-        break
-      text = page.extract_text() or ""
-      if text.strip():
+    try:
+      pages = rag_rust.load_pdf_pages(str(path))
+    except Exception as exc:
+      raise RuntimeError(f"Failed to load PDF via Rust: {path}") from exc
+
+    if MAX_PAGES is not None:
+      pages = pages[:MAX_PAGES]
+
+    for text in pages:
+      if text and text.strip():
         texts.append(text)
+
   return texts
+
 
 def chunk_text(text):
   if not text or not text.strip():
