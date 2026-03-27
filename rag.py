@@ -1,132 +1,129 @@
-import time
-from sentence_transformers import SentenceTransformer
-import lancedb
-import numpy as np
-import requests
 import os
+import time
+
+import lancedb
+import requests
 from dotenv import load_dotenv
+from pdf_oxide import PdfDocument
+from sentence_transformers import SentenceTransformer
 
-# load search tool
-from agent import search
 
-# --- STAGE 1: File I/O ---
 start_io = time.time()
-with open("documents.txt", "r") as file:
-    text = file.read()
-print(f"File Read: {time.time() - start_io:.4f}s")
 
-# --- STAGE 2: Text Processing ---
+pdf_path = os.getenv("PDF_PATH", "../rust-01/rag-app/data/documents.pdf")
+doc = PdfDocument(pdf_path)
+file_content = ""
+page_count = doc.page_count() if callable(doc.page_count) else doc.page_count
+
+for i in range(page_count):
+    page_text = doc.extract_text(i)
+    if page_text:
+        file_content += page_text + "\n\n"
+
+print(f"PDF Read & Extract: {(time.time() - start_io) * 1000:.4f}ms")
+
+
 start_proc = time.time()
-chunks = [chunk for chunk in text.split("\n\n") if chunk.strip()]
-print(f"Text Chunking: {time.time() - start_proc:.4f}s")
 
-# --- STAGE 3: Model Loading & Encoding ---
+chunks = []
+chunk_size = 500
+text = file_content.strip()
+
+for i in range(0, len(text), chunk_size):
+    chunk = text[i:i + chunk_size].strip()
+    if chunk:
+        chunks.append(chunk)
+
+print(f"Text Chunking: {(time.time() - start_proc) * 1000:.4f}ms")
+
+
+print("Loading embedding model...")
 start_model = time.time()
-model = SentenceTransformer("all-MiniLM-L6-v2") # Loading weights is heavy
 
-try:
-    vectors = np.load('vectors.npy')
-    print("Loaded vectors from disk.")
-except FileNotFoundError:
-    print("Encoding chunks (this might take a while)...")
-    vectors = model.encode(chunks)
-    np.save('vectors.npy', vectors)
-print(f"Model/Embedding Stage: {time.time() - start_model:.4f}s")
+model = SentenceTransformer("all-MiniLM-L6-v2")
+print("Encoding chunks in bulk...")
+vectors = model.encode(chunks)
 
-# --- STAGE 4: Database Initialization ---
-# start_db_init = time.time()
-# client = chromadb.Client()
-# collection = client.create_collection("my_docs")
-# print(f"ChromaDB Init: {time.time() - start_db_init:.4f}s")
+print(f"Model/Embedding Stage: {(time.time() - start_model) * 1000:.4f}ms")
 
-# Switching to Lancedb
-db = lancedb.connect("./lance_db")
 
-# --- STAGE 5: Data Conversion & Insertion ---
 start_insert = time.time()
 
-ids = [str(id) for id in range(len(chunks))]
-embeddings = vectors.tolist() # Converting large NumPy arrays to lists is slow
+db = lancedb.connect("./lance_db")
 
-data = [{'id': i, 'text': t, 'vector': v} for i, t, v in zip(ids,chunks,embeddings)]
-# print(f"DB Insertion: {time.time() - start_insert:.4f}s")
+ids = []
+data = []
 
+for i in range(len(chunks)):
+    ids.append(str(i))
 
-# Creating a table in lanceDB
-table = ""
+for i in range(len(chunks)):
+    data.append(
+        {
+            "id": ids[i],
+            "text": chunks[i],
+            "vector": vectors[i].tolist(),
+        }
+    )
+
+print("Inserting documents into LanceDB...")
+
 try:
-    table = db.create_table("docs", data)
-except ValueError:
-    print("Table Already Exists!")
-    table = db["docs"]
-print("table count: ", table.count_rows() )
-print("table head: ", table.head() )
+    db.drop_table("docs")
+except Exception:
+    pass
+
+table = db.create_table("docs", data)
+
+print(f"DB Init & Insertion: {(time.time() - start_insert) * 1000:.4f}ms")
+print("off profiling: rows_count :", table.count_rows())
 
 
-# Searching
-query = "what is the person's name that was mentioned ?"
-query_embedding = model.encode(query)
-print(f"query :{query}\n query_embedding: {query_embedding.shape  }")
+start_search = time.time()
 
-results = table.search( query_embedding.tolist() ).limit(2).to_list()
-#print(f"results: {results} ")
+question = "Question: According to the abstract, what specific type of 'framework' does this paper propose to support knowledge management and decision-making?"
+query_embedding = model.encode(question)
+results = table.search(query_embedding.tolist()).limit(2).to_list()
 
+context_list = []
+for row in results:
+    context_list.append(row["text"])
 
-context_list = [ row["text"] for row in results ]
 context = "\n\n".join(context_list)
 
-question = query 
+print(f"Search Stage: {(time.time() - start_search) * 1000:.4f}ms")
+print(context)
 
-#proompt = f"answer the question using the available tools \n\nContext: \n{context}\n Question:\n{question}"
-# failed !proompt = f"answer the question using the available tools \n\n Question:\n{question}"
-proompt = f"answer the question using the available tools ( hint: use the tool to look for author , the database is small so any search in the direction of the hint will be enough )\n\n Question:\n{question}"
 
-print(f"proompt: \n{proompt}")
+start_llm = time.time()
 
-# Proomting OpenRouter
 load_dotenv()
-api_key = os.getenv("API_KEY") 
-model = os.getenv("MODEL")
+api_key = os.getenv("API_KEY")
+model_name = os.getenv("MODEL")
 
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search",
-            "description": "Search in the vector database for semantic similarity",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "the text that will be converted to vector and search the vector db using it"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    }
-]
+answer = (
+    "Use the following context to answer the question.\n\n"
+    f"Context:\n{context}\n\nQuestion: {question}"
+)
 
-header = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+headers = {
+    "Authorization": f"Bearer {api_key}",
+    "Content-Type": "application/json",
 }
 
 body = {
-        "model": model,
-        "messages": [
-            {"role": "user", "content": proompt}
-         ],
-        "tools": tools,
-        "tool_choice": "auto"
+    "model": model_name,
+    "messages": [
+        {"role": "user", "content": answer}
+    ],
 }
 
+url = "https://openrouter.ai/api/v1/chat/completions"
+response = requests.post(url, json=body, headers=headers)
 
+print(f"LLM Request Stage: {(time.time() - start_llm) * 1000:.4f}ms")
 
-
-url  = "https://openrouter.ai/api/v1/chat/completions"
-response = requests.post(url, json=body, headers=header)
-print("\n\nResponse status: ", response.status_code)
-print("\n\nResponse json: ", response.json())
-
+try:
+    print("\nAnswer:", response.json()["choices"][0]["message"]["content"])
+except Exception:
+    print("\nAnswer:", response.text)
