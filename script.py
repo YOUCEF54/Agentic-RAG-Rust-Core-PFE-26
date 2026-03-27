@@ -27,7 +27,7 @@ OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
 OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "Agentic-RAG-Rust-Core-PFE-26")
 OPENROUTER_TIMEOUT = 60
 OPENROUTER_CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openrouter/free")
-EMBED_MODEL_NAME = "bge-small-en-v1.5"
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 CHAT_TEMPERATURE = 0.2
 EMBED_BATCH_SIZE = 32
 EMBED_NORMALIZE = True
@@ -60,7 +60,7 @@ start_time = time.perf_counter()
 
 def log_run_info():
   print("=== Run Info ===")
-  print(f"Chat model: {OPENROUTER_CHAT_MODEL}")
+  print(f"Chat model (requested): {OPENROUTER_CHAT_MODEL}")
   print(f"Embedding model: {EMBED_MODEL_NAME}")
   print(f"Embedding batch size: {EMBED_BATCH_SIZE}")
   print(f"Embedding normalize: {EMBED_NORMALIZE}")
@@ -144,7 +144,13 @@ def chat_complete(messages):
       "temperature": CHAT_TEMPERATURE,
     },
   )
-  return data["choices"][0]["message"]["content"]
+  content = data["choices"][0]["message"]["content"]
+  model_used = data.get("model")
+  if not model_used:
+    model_used = data.get("choices", [{}])[0].get("model")
+  return content, model_used
+
+
 
 def load_pdf_texts():
   paths = []
@@ -276,7 +282,7 @@ Use only the following pieces of context to answer the question. Don't make up a
 '''
 
   llm_start = time.perf_counter()
-  response_text = chat_complete([
+  response_text, model_used = chat_complete([
     {'role': 'system', 'content': instruction_prompt},
     {'role': 'user', 'content': input_query},
   ])
@@ -284,6 +290,8 @@ Use only the following pieces of context to answer the question. Don't make up a
 
   print('Chatbot response:')
   print(response_text)
+  if model_used:
+    print(f'Chat model used: {model_used}')
   print(f'LLM time: {(llm_end - llm_start)*1000:.2f}ms')
 
 # Record the end time
