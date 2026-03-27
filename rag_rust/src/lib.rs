@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pdf_oxide::PdfDocument;
 use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
 use pdf_oxide::pipeline::reading_order::ReadingOrderContext;
+use rayon::prelude::*;
 
 fn cosine_similarity_inner(a: &[f32], b: &[f32]) -> Option<f32> {
     let mut dot = 0.0f32;
@@ -99,23 +100,46 @@ fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec
 }
 #[pyfunction]
 fn load_pdf_pages(path: String) -> PyResult<Vec<String>> {
-    // 1. Ouverture du document avec la nouvelle API
-    let mut doc = PdfDocument::open(&path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Impossible d'ouvrir le PDF: {:?}", e))
-    })?;
+    extract_pages_from_path(&path).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyIOError, _>(e)
+    })
+}
+
+#[pyfunction]
+fn load_pdf_pages_many(paths: Vec<String>) -> PyResult<Vec<String>> {
+    let mut results: Vec<(usize, Vec<String>)> = paths
+        .par_iter()
+        .enumerate()
+        .map(|(idx, path)| {
+            extract_pages_from_path(path)
+                .map(|pages| (idx, pages))
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+
+    results.sort_by_key(|(idx, _)| *idx);
+
+    let mut all_pages = Vec::new();
+    for (_, pages) in results {
+        all_pages.extend(pages);
+    }
+
+    Ok(all_pages)
+}
+
+fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
+    let mut doc = PdfDocument::open(path)
+        .map_err(|e| format!("Impossible d'ouvrir le PDF: {:?}", e))?;
 
     let mut pages_text = Vec::new();
     let config = TextPipelineConfig::default();
-    let pipeline = TextPipeline::with_config(config.clone());
+    let pipeline = TextPipeline::with_config(config);
 
-    // 2. Boucle sur les pages (l'index commence à 0)
-    let num_pages = doc.page_count().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Impossible de lire le nombre de pages: {:?}", e))
-    })?;
+    let num_pages = doc.page_count()
+        .map_err(|e| format!("Impossible de lire le nombre de pages: {:?}", e))?;
+
     for i in 0..num_pages {
-        // Extraction des "spans" (blocs de texte)
         if let Ok(spans) = doc.extract_spans(i) {
-            // Le pipeline traite les blocs pour respecter l'ordre de lecture (colonnes)
             let context = ReadingOrderContext::default().with_page(i as u32);
             if let Ok(ordered_spans) = pipeline.process(spans, context) {
                 let mut page_full_text = String::new();
@@ -123,7 +147,7 @@ fn load_pdf_pages(path: String) -> PyResult<Vec<String>> {
                     page_full_text.push_str(&span.span.text);
                     page_full_text.push(' ');
                 }
-                
+
                 let trimmed = page_full_text.trim().to_string();
                 if !trimmed.is_empty() {
                     pages_text.push(trimmed);
@@ -141,5 +165,6 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(top_k_cosine, m)?)?;
     m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages, m)?)?;
+    m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
     Ok(())
 }

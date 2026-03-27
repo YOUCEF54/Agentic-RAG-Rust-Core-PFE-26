@@ -10,3 +10,4 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.21", features = ["extension-module"] }
 pdf_oxide = "0.3.10" # Ou la version la plus récente
+rayon = "1.10"

@@ -1,3 +1,4 @@
-ollama
 lancedb
+requests
+sentence-transformers
 maturin
