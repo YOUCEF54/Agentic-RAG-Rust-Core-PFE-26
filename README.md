@@ -8,7 +8,7 @@ answers questions from retrieved context via OpenRouter.
 - PDF ingestion from `pdfs/`
 - Rust-based smart chunking (`rag_rust`)
 - Rust batch PDF loader (one call, multi-file) with parallelism
-- Vector search with LanceDB
+- Vector search with LanceDB (handled in Rust)
 - Local embeddings with `sentence-transformers`
 - Optional LLM response generation with OpenRouter
 

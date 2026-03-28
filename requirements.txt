@@ -1,4 +1,3 @@
-lancedb
 requests
 sentence-transformers
 maturin
