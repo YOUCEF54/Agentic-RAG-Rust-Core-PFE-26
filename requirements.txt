@@ -1,3 +1,4 @@
 requests
 sentence-transformers
 maturin
+torch

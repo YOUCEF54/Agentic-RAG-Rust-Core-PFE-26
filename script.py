@@ -9,6 +9,9 @@ import rag_rust
 import requests
 import sys
 import io
+import torch
+
+torch.set_num_threads(os.cpu_count())  # only matters on CPU, ignored on GPU
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -124,9 +127,10 @@ _EMBEDDER = None
 def get_embedder():
     global _EMBEDDER
     if _EMBEDDER is None:
-        _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Embedding device: {device}")
+        _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME, device=device)
     return _EMBEDDER
-
 
 def embed_texts(texts):
     embedder = get_embedder()
