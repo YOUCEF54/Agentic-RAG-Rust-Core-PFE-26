@@ -11,7 +11,7 @@ import sys
 import io
 import torch
 
-torch.set_num_threads(os.cpu_count())  # only matters on CPU, ignored on GPU
+torch.set_num_threads(os.cpu_count())
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -24,7 +24,7 @@ OPENROUTER_TIMEOUT = 60
 OPENROUTER_CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openrouter/free")
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 CHAT_TEMPERATURE = 0.2
-EMBED_BATCH_SIZE = 64        # ← increased from 32
+EMBED_BATCH_SIZE = 64
 EMBED_NORMALIZE = True
 TOP_K = 3
 
@@ -34,7 +34,7 @@ TABLE_NAME = 'pdf_chunks'
 REBUILD_DB = False
 
 # Cache settings
-CACHE_FILE = '.rag_cache.json'  # ← stores hash + chunks
+CACHE_FILE = '.rag_cache.json'
 
 # PDF ingestion settings
 PDF_DIR = 'pdfs'
@@ -53,26 +53,28 @@ BENCHMARK_QUERIES = [
     "List important definitions.",
 ]
 
+# ── Profiling settings ─────────────────────────────────────────────────────────
+NUM_RUNS = 100
+CSV_FILE = "profile_results.csv"
+CSV_HEADER = "run,pdf_read_ms,chunking_ms,embedding_ms,db_insert_ms,search_ms\n"
+
 start_time = time.perf_counter()
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers (unchanged) ────────────────────────────────────────────────────────
 
 def compute_pdf_hash() -> str:
-    """SHA-256 of all PDF files in the folder, combined."""
     paths = []
     if PDF_PATHS:
         paths = [Path(p) for p in PDF_PATHS]
     else:
         pdf_dir = Path(PDF_DIR)
         if pdf_dir.exists():
-            paths = sorted(pdf_dir.glob('*.pdf'))  # sorted for determinism
-
+            paths = sorted(pdf_dir.glob('*.pdf'))
     h = hashlib.sha256()
     for p in paths:
         h.update(p.name.encode())
         h.update(p.read_bytes())
-    # Include config that affects chunking
     h.update(f"{CHUNK_SIZE}_{CHUNK_OVERLAP}_{EMBED_MODEL_NAME}".encode())
     return h.hexdigest()
 
@@ -132,13 +134,14 @@ def get_embedder():
         _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME, device=device)
     return _EMBEDDER
 
+
 def embed_texts(texts):
     embedder = get_embedder()
     vectors = embedder.encode(
         texts,
         batch_size=EMBED_BATCH_SIZE,
         normalize_embeddings=EMBED_NORMALIZE,
-        show_progress_bar=len(texts) > 50,  # only show bar for large batches
+        show_progress_bar=len(texts) > 50,
     )
     return vectors.tolist()
 
@@ -198,24 +201,64 @@ def log_run_info():
     print("================")
 
 
-# ── Main pipeline ──────────────────────────────────────────────────────────────
+# ── Profiling loop (mirrors the reference script exactly) ──────────────────────
 
-def build_or_open_table(chunks: list[str], needs_rebuild: bool) -> None:
-    if not needs_rebuild:
-        print("DB is up-to-date, skipping embed + insert.")
-        return
+def run_profiling_loop(dataset: list[str]):
+    """100-run profiling loop — only runs pipeline stages, no LLM."""
 
-    embed_start = time.perf_counter()
-    embeddings = embed_texts(chunks)
-    embed_time = time.perf_counter() - embed_start
-    print(f'Embedding time: {embed_time*1000:.2f}ms ({len(chunks)/embed_time:.2f} chunks/s)')
+    # CSV setup
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, "w") as f:
+            f.write(CSV_HEADER)
 
-    rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
+    QUESTION = "what is Samyama?"
+    context = ""
 
+    for run in range(1, NUM_RUNS + 1):
+        print(f"\n{'─' * 50}")
+        print(f"Run {run}/{NUM_RUNS}")
 
-def retrieve(query, top_n=3):
-    query_embedding = embed_texts([query])[0]
-    return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, top_n)
+        # 1. PDF read & extract ────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        pages = load_pdf_texts()
+        pdf_read_ms = (time.perf_counter() - t0) * 1000
+        print(f"  PDF Read & Extract:    {pdf_read_ms:.4f} ms  ({len(pages)} pages)")
+
+        # 2. Chunking ──────────────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        chunks = chunk_texts(pages)
+        chunking_ms = (time.perf_counter() - t0) * 1000
+        print(f"  Text Chunking:         {chunking_ms:.4f} ms  ({len(chunks)} chunks)")
+
+        # 3. Embedding ─────────────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        embeddings = embed_texts(chunks)
+        embedding_ms = (time.perf_counter() - t0) * 1000
+        print(f"  Embedding:             {embedding_ms:.4f} ms")
+
+        # 4. DB insert ─────────────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
+        db_insert_ms = (time.perf_counter() - t0) * 1000
+        print(f"  DB Insert:             {db_insert_ms:.4f} ms")
+
+        # 5. Vector search ─────────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        query_embedding = embed_texts([QUESTION])[0]
+        results = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, TOP_K)
+        context = "\n\n".join(text for text, _ in results)
+        search_ms = (time.perf_counter() - t0) * 1000
+        print(f"  Search:                {search_ms:.4f} ms")
+
+        # Append to CSV ────────────────────────────────────────────────────────
+        with open(CSV_FILE, "a") as f:
+            f.write(
+                f"{run},{pdf_read_ms:.4f},{chunking_ms:.4f},"
+                f"{embedding_ms:.4f},{db_insert_ms:.4f},{search_ms:.4f}\n"
+            )
+
+    print(f"\nProfiling complete. Results saved to '{CSV_FILE}'.")
+    return context
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -226,10 +269,9 @@ if __name__ == "__main__":
     current_hash = compute_pdf_hash()
     cache = load_cache()
     db_exists = Path(DB_DIR).exists()
-
     needs_rebuild = REBUILD_DB or not db_exists or cache.get('hash') != current_hash
 
-    # 2. Load + chunk (fast Rust path, always needed for cache check)
+    # 2. Load + chunk
     if needs_rebuild:
         pdf_start = time.perf_counter()
         pages = load_pdf_texts()
@@ -244,44 +286,42 @@ if __name__ == "__main__":
 
         save_cache(current_hash, dataset)
     else:
-        # Load chunks from cache — no PDF reading or chunking needed
         dataset = cache['chunks']
         print(f'Cache hit: {len(dataset)} chunks loaded instantly, skipping PDF+embed.')
 
     # 3. Embed + insert only when needed
     build_start = time.perf_counter()
-    build_or_open_table(dataset, needs_rebuild)
-    print(f'DB build/open time: {(time.perf_counter()-build_start)*1000:.2f}ms')
+    build_or_open_table_start = time.perf_counter()
+    if needs_rebuild:
+        embed_start = time.perf_counter()
+        embeddings = embed_texts(dataset)
+        embed_time = time.perf_counter() - embed_start
+        print(f'Embedding time: {embed_time*1000:.2f}ms ({len(dataset)/embed_time:.2f} chunks/s)')
+        rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, dataset, embeddings, True)
+    else:
+        print("DB is up-to-date, skipping embed + insert.")
+    print(f'DB build/open time: {(time.perf_counter()-build_or_open_table_start)*1000:.2f}ms')
 
     log_run_info()
 
-    # 4. Query
-    input_query = "what is Samyama?"
-    if not input_query:
-        input_query = "What is this document about?"
+    # 4. Run 100-iteration profiling loop (single LLM call after)
+    context = run_profiling_loop(dataset)
 
-    query_start = time.perf_counter()
-    retrieved_knowledge = retrieve(input_query, top_n=TOP_K)
-    print(f'Retrieval time: {(time.perf_counter()-query_start)*1000:.2f}ms')
+    # 5. Single LLM call after all profiling runs
+    print(f"\n{'─' * 50}")
+    print("Running LLM query (single call, not profiled)...")
 
-    print('Retrieved knowledge:')
-    for text, distance in retrieved_knowledge:
-        print(f' - (distance: {distance:.4f}) {text}')
-
-    context_text = '\n'.join([f' - {text}' for text, _ in retrieved_knowledge])
-
-    # 5. LLM
     if RUN_LLM:
         instruction_prompt = (
             "You are a helpful chatbot.\n"
             "Use only the following pieces of context to answer the question. "
             "Don't make up any new information:\n"
-            f"{context_text}\n"
+            f"{context}\n"
         )
         llm_start = time.perf_counter()
         response_text, model_used = chat_complete([
             {'role': 'system', 'content': instruction_prompt},
-            {'role': 'user', 'content': input_query},
+            {'role': 'user', 'content': "what is Samyama?"},
         ])
         print(f'\nChatbot response:\n{response_text}')
         if model_used:
@@ -296,7 +336,8 @@ if __name__ == "__main__":
         bench_start = time.perf_counter()
         for _ in range(BENCHMARK_ITERS):
             for q in BENCHMARK_QUERIES:
-                retrieve(q)
+                query_embedding = embed_texts([q])[0]
+                rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, TOP_K)
         bench_total = time.perf_counter() - bench_start
         print(f'Benchmark: {bench_total*1000:.2f}ms for {total_queries} queries')
         print(f'Avg per query: {bench_total/total_queries:.4f}s')
