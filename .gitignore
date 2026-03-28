@@ -25,6 +25,7 @@ pdfs/
 *.log
 *.db
 *.sqlite3
+*.txt
 
 # Rust
 rag_rust/target/
