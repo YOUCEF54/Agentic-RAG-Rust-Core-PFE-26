@@ -5,7 +5,7 @@ WORKDIR /app
 # System deps for Python + build tooling
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv python3-dev \
-    gcc g++ make pkg-config libssl-dev \
+    gcc g++ make pkg-config libssl-dev protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
