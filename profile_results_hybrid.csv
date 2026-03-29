@@ -1,4 +1,4 @@
-run,pdf_read_ms,chunking_ms,embedding_ms,db_insert_ms,search_ms
+run,pdf_read_ms,chunking_ms,model_embedding_ms,db_insert_ms,search_ms
 1,167.6906,2.7478,50305.1364,77.7376,690.0575
 2,1031.9594,2.8257,49216.9948,22.9259,161.6424
 3,112.5580,2.7333,39666.1055,21.1642,67.8052
