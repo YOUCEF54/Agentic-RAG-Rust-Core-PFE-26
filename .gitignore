@@ -21,11 +21,13 @@ dist/
 # Data / outputs
 lancedb/
 pdfs/
+data/
 *.pdf
 *.log
 *.db
 *.sqlite3
 *.txt
+.rag_cache.json
 
 # Rust
 rag_rust/target/

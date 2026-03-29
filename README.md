@@ -13,7 +13,7 @@ answers questions from retrieved context via OpenRouter.
 - Optional LLM response generation with OpenRouter
 
 **Project Structure**
-- `script.py`: main Python pipeline
+- `api.py`: FastAPI server for the frontend
 - `rag_rust/`: Rust extension module (PyO3)
 - `pdfs/`: local PDF files (ignored by git)
 - `lancedb/`: local vector store (ignored by git)
@@ -32,9 +32,49 @@ answers questions from retrieved context via OpenRouter.
    `maturin develop`
 5. Put your PDFs in `pdfs/`.
 
-**Run**
-`python script.py`
+**CORS (Frontend)**
+- Dev quick fix:
+  `setx CORS_ALLOW_ALL true`
+- Or explicit:
+  `setx CORS_ORIGINS "http://localhost:3000,http://127.0.0.1:3000"`
+
+**Hugging Face (optional)**
+- If you hit 401 when downloading the embedding model:
+  `setx HF_TOKEN "<YOUR_HF_TOKEN>"`
+
+**Run (API)**
+`uvicorn api:app --reload`
 
 **Notes**
-- Make sure `OPENROUTER_API_KEY` is set before running `script.py`.
-- To rebuild the vector DB, set `REBUILD_DB = True` in `script.py`.
+- Make sure `OPENROUTER_API_KEY` is set before running the API.
+- Use `POST /index` to rebuild the vector DB.
+
+**API Endpoints**
+- `GET /health`
+  - Health check.
+- `POST /documents`
+  - Upload one or more PDF files (multipart form).
+- `GET /documents`
+  - List uploaded PDFs.
+- `POST /index`
+  - Build or rebuild the vector index from uploaded PDFs.
+  - Body: `{"rebuild": true, "max_pages": null}`
+- `POST /query`
+  - Query the index and optionally call OpenRouter for an answer.
+  - Body:
+    `{"question": "...", "top_k": 3, "chat_model": "openrouter/free", "use_llm": true}`
+
+**Example Requests**
+```bash
+curl -X POST http://localhost:8000/documents \
+  -F "files=@./data/pdfs/doc1.pdf" \
+  -F "files=@./data/pdfs/doc2.pdf"
+
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -d '{"rebuild": true, "max_pages": null}'
+
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the topic?", "top_k":3, "use_llm":true}'
+```

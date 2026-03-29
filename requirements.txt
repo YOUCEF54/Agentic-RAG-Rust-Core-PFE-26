@@ -1,4 +1,7 @@
 requests
 sentence-transformers
+fastapi
+uvicorn
+python-multipart
 maturin
 torch
