@@ -58,6 +58,8 @@ else:
   allow_origins = [o.strip() for o in _cors_origins.split(",") if o.strip()] or [
     "http://localhost:3000",
     "https://agentic-rag-rust-core-frontend-pfe.vercel.app/",
+    "https://agentic-rag-rust-core-frontend-pfe-26-27avjnf8b.vercel.app",
+    "https://agentic-rag-rust-core-frontend-pfe-26.vercel.app"
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -66,10 +68,6 @@ else:
 app.add_middleware(
   CORSMiddleware,
   allow_origins=allow_origins,
-  allow_origins=[
-    "https://agentic-rag-rust-core-frontend-pfe-26-27avjnf8b.vercel.app",
-    "https://agentic-rag-rust-core-frontend-pfe-26.vercel.app"
-  ],
   allow_credentials=True,
   allow_methods=["*"],
   allow_headers=["*"],
