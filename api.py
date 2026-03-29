@@ -50,7 +50,8 @@ _INDEX_READY = False
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # CORS (frontend integration)
-_cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
+# _cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
+_cors_allow_all = True
 _cors_origins = os.getenv("CORS_ORIGINS", "")
 if _cors_allow_all:
   allow_origins = ["*"]

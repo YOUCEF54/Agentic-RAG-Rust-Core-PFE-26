@@ -19,6 +19,7 @@ dist/
 *.whl
 
 presentions/
+only_rust/
 
 # Data / outputs
 lancedb/
