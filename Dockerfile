@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
 
 COPY rag_rust /app/rag_rust
 RUN python3 -m pip install --no-cache-dir maturin \
@@ -21,11 +21,11 @@ WORKDIR /app
 
 # Install runtime deps
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
 
 # Install the Rust extension wheel
 COPY --from=builder /app/target/wheels /app/wheels
-RUN pip install --no-cache-dir /app/wheels/*.whl
+RUN pip install --no-cache-dir --break-system-packages /app/wheels/*.whl
 
 COPY api.py /app/api.py
 COPY README.md /app/README.md
