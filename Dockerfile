@@ -1,4 +1,4 @@
-FROM rust:1.92-slim AS builder
+FROM rust:1.92-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -16,10 +16,11 @@ RUN python3 -m venv /opt/venv \
   && /opt/venv/bin/pip install --no-cache-dir -r /app/requirements.txt
 
 COPY rag_rust /app/rag_rust
+ENV PYO3_PYTHON=/opt/venv/bin/python
 RUN /opt/venv/bin/pip install --no-cache-dir maturin \
   && /opt/venv/bin/python -m maturin build --release -m /app/rag_rust/Cargo.toml
 
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
