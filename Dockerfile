@@ -30,7 +30,7 @@ RUN python -m venv /opt/venv \
   && /opt/venv/bin/pip install --no-cache-dir -r /app/requirements.txt
 
 # Install the Rust extension wheel
-COPY --from=builder /app/target/wheels /app/wheels
+COPY --from=builder /app/rag_rust/target/wheels /app/wheels
 RUN /opt/venv/bin/pip install --no-cache-dir /app/wheels/*.whl
 
 COPY api.py /app/api.py
