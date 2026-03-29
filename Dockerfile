@@ -5,8 +5,11 @@ WORKDIR /app
 # System deps for Python + build tooling
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv python3-dev \
-    gcc g++ make pkg-config libssl-dev protobuf-compiler \
+    gcc g++ make pkg-config libssl-dev protobuf-compiler libprotobuf-dev \
   && rm -rf /var/lib/apt/lists/*
+
+# Ensure protoc can find well-known types (e.g., google/protobuf/empty.proto)
+ENV PROTOC_INCLUDE=/usr/include
 
 COPY requirements.txt /app/requirements.txt
 RUN python3 -m venv /opt/venv \
