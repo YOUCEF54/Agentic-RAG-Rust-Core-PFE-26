@@ -18,6 +18,8 @@ build/
 dist/
 *.whl
 
+presentions/
+
 # Data / outputs
 lancedb/
 pdfs/

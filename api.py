@@ -66,13 +66,13 @@ else:
 app.add_middleware(
   CORSMiddleware,
   allow_origins=allow_origins,
-      allow_origins=[
-        "https://agentic-rag-rust-core-frontend-pfe-26-27avjnf8b.vercel.app",
-        "https://agentic-rag-rust-core-frontend-pfe-26.vercel.app"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+  allow_origins=[
+    "https://agentic-rag-rust-core-frontend-pfe-26-27avjnf8b.vercel.app",
+    "https://agentic-rag-rust-core-frontend-pfe-26.vercel.app"
+  ],
+  allow_credentials=True,
+  allow_methods=["*"],
+  allow_headers=["*"],
 )
 
 
