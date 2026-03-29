@@ -25,7 +25,7 @@ answers questions from retrieved context via OpenRouter.
 3. Set your OpenRouter key:
    `setx OPENROUTER_API_KEY "<YOUR_KEY>"`
    Optional (required for some free models):
-   `setx OPENROUTER_HTTP_REFERER "http://localhost:3000"`
+   `setx OPENROUTER_HTTP_REFERER "http://localhost:3000,https://agentic-rag-rust-core-frontend-pfe.vercel.app/"`
    `setx OPENROUTER_TITLE "Agentic-RAG-Rust-Core-PFE-26"`
 4. Build the Rust extension:
    `cd rag_rust`
@@ -36,7 +36,7 @@ answers questions from retrieved context via OpenRouter.
 - Dev quick fix:
   `setx CORS_ALLOW_ALL true`
 - Or explicit:
-  `setx CORS_ORIGINS "http://localhost:3000,http://127.0.0.1:3000"`
+  `setx CORS_ORIGINS "https://agentic-rag-rust-core-frontend-pfe.vercel.app/,http://localhost:3000,http://127.0.0.1:3000"`
 
 **Hugging Face (optional)**
 - If you hit 401 when downloading the embedding model:
