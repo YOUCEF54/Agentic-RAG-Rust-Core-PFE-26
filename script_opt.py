@@ -6,11 +6,14 @@ Original functionality preserved:
   - LLM chat via OpenRouter (RUN_LLM flag)
   - log_run_info, all config flags
 
-Added:
-  - 100-run profiling loop (same CSV format as rust_only and python_only)
-    CSV columns: run, pdf_read_ms, chunking_ms, model_embedding_ms, db_insert_ms, search_ms
-  - RUN_PROFILING flag (default True) — set to False to skip profiling and run
-    the original pipeline only
+Optimizations added vs previous version:
+  - embed_texts_rust() replaces SentenceTransformer — uses fastembed ONNX
+    runtime in Rust (now with BGE Small EN v1.5)
+  - lancedb_search no longer calls open_table on every run — Table handle
+    is now cached in lib.rs via a global OnceCell, invalidated on each insert
+  - RUN_PROFILING flag (default True) to toggle the 100-run loop
+    CSV columns: run, pdf_read_ms, chunking_ms, model_embedding_ms,
+                 db_insert_ms, search_ms
 """
 import os
 import sys
@@ -22,9 +25,8 @@ import json
 from pathlib import Path
 
 import torch
-from sentence_transformers import SentenceTransformer
-import rag_rust
 import requests
+import rag_rust
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -38,14 +40,12 @@ OPENROUTER_TIMEOUT      = 60
 OPENROUTER_CHAT_MODEL   = os.getenv("OPENROUTER_CHAT_MODEL") or os.getenv("MODEL", "openrouter/free")
 EMBED_MODEL_NAME        = "BAAI/bge-small-en-v1.5"
 CHAT_TEMPERATURE        = 0.2
-EMBED_BATCH_SIZE        = 64
-EMBED_NORMALIZE         = True
 TOP_K                   = 3
 
 # Storage settings
-DB_DIR      = os.getenv("DB_DIR", "lancedb")
-TABLE_NAME  = "pdf_chunks"
-REBUILD_DB  = False
+DB_DIR     = os.getenv("DB_DIR", "lancedb")
+TABLE_NAME = "pdf_chunks"
+REBUILD_DB = False
 
 # Cache settings
 CACHE_FILE = ".rag_cache.json"
@@ -68,11 +68,13 @@ BENCHMARK_QUERIES = [
 ]
 
 # ── Profiling options ──────────────────────────────────────────────────────────
-RUN_PROFILING = True          # set False to skip and run original pipeline only
+RUN_PROFILING = True
 NUM_RUNS      = 100
-CSV_FILE      = "profile_results_hybrid_post.csv"
+CSV_FILE      = "profile_results.csv"
 CSV_HEADER    = ["run", "pdf_read_ms", "chunking_ms", "model_embedding_ms",
                  "db_insert_ms", "search_ms"]
+
+BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 QUESTION = (
     "Question: According to the abstract, what specific type of 'framework' "
@@ -85,7 +87,6 @@ start_time = time.perf_counter()
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def compute_pdf_hash() -> str:
-    """SHA-256 of all PDF files in the folder, combined."""
     paths = []
     if PDF_PATHS:
         paths = [Path(p) for p in PDF_PATHS]
@@ -147,25 +148,9 @@ def openrouter_post(path, payload):
     return response.json()
 
 
-_EMBEDDER = None
-
-def get_embedder():
-    global _EMBEDDER
-    if _EMBEDDER is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Embedding device: {device}")
-        _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME, device=device)
-    return _EMBEDDER
-
-
-def embed_texts(texts: list, silent: bool = False) -> list:
-    embedder = get_embedder()
-    return embedder.encode(
-        texts,
-        batch_size=EMBED_BATCH_SIZE,
-        normalize_embeddings=EMBED_NORMALIZE,
-        show_progress_bar=(not silent and len(texts) > 50),
-    ).tolist()
+def embed_texts(texts: list) -> list:
+    """Embed via fastembed ONNX runtime in Rust — same engine as rust_only."""
+    return rag_rust.embed_texts_rust(texts)
 
 
 def chat_complete(messages):
@@ -211,15 +196,8 @@ def log_run_info():
     print("=== Run Info ===")
     print(f"Chat model   : {OPENROUTER_CHAT_MODEL}")
     print(f"Embed model  : {EMBED_MODEL_NAME}")
-    print(f"Batch size   : {EMBED_BATCH_SIZE}")
     print(f"Chunk size   : {CHUNK_SIZE} | overlap: {CHUNK_OVERLAP}")
-    try:
-        embedder = get_embedder()
-        device = getattr(embedder, "device", None) or getattr(embedder, "_target_device", None)
-        print(f"Device       : {device}")
-        print(f"Embed dim    : {embedder.get_sentence_embedding_dimension()}")
-    except Exception as exc:
-        print(f"Embed info N/A: {exc}")
+    print("Embed engine : fastembed ONNX (Rust)")
     print("================")
 
 
@@ -237,7 +215,8 @@ def build_or_open_table(chunks: list, needs_rebuild: bool) -> None:
 
 
 def retrieve(query: str, top_n: int = TOP_K):
-    query_embedding = embed_texts([query])[0]
+    prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
+    query_embedding = embed_texts([prefixed_query])[0]
     return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, top_n)
 
 
@@ -258,12 +237,12 @@ if __name__ == "__main__":
 
     print(f"Found {len(all_pdf_paths)} PDF(s): {[Path(p).name for p in all_pdf_paths]}")
 
-    # Pre-load model once for everything below
-    print("Loading embedding model (once)...")
-    get_embedder()
+    # Pre-load fastembed model once (triggers OnceCell in Rust, mirrors rust_only)
+    print("Loading fastembed model (once)...")
+    rag_rust.load_embed_model()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PROFILING LOOP (100 runs, same CSV format as rust_only and python_only)
+    # PROFILING LOOP — 100 runs, CSV format identical to rust_only / python_only
     # ══════════════════════════════════════════════════════════════════════════
     if RUN_PROFILING:
         csv_path = Path(CSV_FILE)
@@ -277,7 +256,7 @@ if __name__ == "__main__":
             print(f"\n{'─' * 50}")
             print(f"Run {run}/{NUM_RUNS}")
 
-            # 1. PDF read & extract — Rust parallel (par_iter over files+pages) ─
+            # 1. PDF read & extract — Rust Rayon (par_iter over files + pages) ─
             t0 = time.perf_counter()
             pages = rag_rust.load_pdf_pages_many(all_pdf_paths)
             pages = [p for p in pages if p and p.strip()]
@@ -294,21 +273,21 @@ if __name__ == "__main__":
             chunking_ms = (time.perf_counter() - t0) * 1000
             print(f"  Text Chunking:         {chunking_ms:.4f} ms  ({len(chunks)} chunks)")
 
-            # 3. Embedding — SentenceTransformer (Python, silent in loop) ──────
+            # 3. Embedding — fastembed ONNX via Rust (same engine as rust_only) ─
             t0 = time.perf_counter()
-            embeddings = embed_texts(chunks, silent=True)
+            embeddings = embed_texts(chunks)
             embedding_ms = (time.perf_counter() - t0) * 1000
             print(f"  Model/Embedding:       {embedding_ms:.4f} ms")
 
-            # 4. DB insertion — Rust LanceDB bindings ─────────────────────────
+            # 4. DB insertion — Rust LanceDB bindings (table cache invalidated) ─
             t0 = time.perf_counter()
             rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
             db_insert_ms = (time.perf_counter() - t0) * 1000
             print(f"  DB Init & Insertion:   {db_insert_ms:.4f} ms  ({len(chunks)} rows)")
 
-            # 5. Vector search — Rust LanceDB bindings ────────────────────────
+            # 5. Vector search — Rust LanceDB (cached Table handle, no open_table)
             t0 = time.perf_counter()
-            query_vec = embed_texts([QUESTION], silent=True)[0]
+            query_vec = embed_texts([f"{BGE_QUERY_PREFIX}{QUESTION}"])[0]
             results = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vec, TOP_K)
             profiling_context = "\n\n".join(text for text, _ in results)
             search_ms = (time.perf_counter() - t0) * 1000

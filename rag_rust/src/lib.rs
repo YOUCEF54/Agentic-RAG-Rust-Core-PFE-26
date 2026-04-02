@@ -110,17 +110,19 @@ async fn get_or_open_table(db: &lancedb::Connection, db_dir: &str, table_name: &
 // The model is loaded once into a OnceCell and reused across all 100 runs,
 // mirroring exactly how rust_only loads its model outside the loop.
 //
-// Model: AllMiniLML6V2 — 384-dim, matches the LanceDB schema dim below.
+// Model: BGE Small EN v1.5 — 384-dim, matches the LanceDB schema dim below.
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use std::sync::Mutex;
 
-static EMBED_MODEL: OnceCell<TextEmbedding> = OnceCell::new();
+static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 
-fn get_embed_model() -> &'static TextEmbedding {
+fn get_embed_model() -> &'static Mutex<TextEmbedding> {
     EMBED_MODEL.get_or_init(|| {
-        TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+        let model = TextEmbedding::try_new(
+            InitOptions::new(EmbeddingModel::BGESmallENV15)
         )
-        .expect("Failed to load fastembed model")
+        .expect("Failed to load fastembed model");
+        Mutex::new(model)
     })
 }
 
@@ -137,8 +139,11 @@ fn load_embed_model() -> PyResult<()> {
 #[pyfunction]
 fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
     let model = get_embed_model();
+    let mut guard = model
+        .lock()
+        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Embed model lock poisoned"))?;
     let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    model
+    guard
         .embed(refs, None)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))
 }
