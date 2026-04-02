@@ -18,7 +18,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::connect;
 use tokio::runtime::Runtime;
 
-// ── Fix #1: Global runtime — created once, reused across all calls ─────────────
+// ── Global Tokio runtime — created once, reused across all calls ───────────────
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
 fn get_runtime() -> &'static Runtime {
@@ -30,11 +30,10 @@ fn get_runtime() -> &'static Runtime {
     })
 }
 
-// ── Fix #2: Cached DB connection — reconnects only when db_dir changes ─────────
+// ── Cached DB connection — reconnects only when db_dir changes ─────────────────
 static DB_CACHE: OnceCell<std::sync::Mutex<(String, lancedb::Connection)>> = OnceCell::new();
 
 async fn get_or_connect(db_dir: &str) -> Result<lancedb::Connection, String> {
-    // Fast path: if same db_dir, reuse connection
     if let Some(cache) = DB_CACHE.get() {
         if let Ok(guard) = cache.lock() {
             if guard.0 == db_dir {
@@ -43,18 +42,15 @@ async fn get_or_connect(db_dir: &str) -> Result<lancedb::Connection, String> {
         }
     }
 
-    // Slow path: new connection
     let conn = connect(db_dir)
         .execute()
         .await
         .map_err(|e| format!("DB connect failed: {:?}", e))?;
 
-    // Store in cache
     let _ = DB_CACHE.get_or_init(|| {
         std::sync::Mutex::new((db_dir.to_string(), conn.clone()))
     });
 
-    // Update if already initialized with different path
     if let Some(cache) = DB_CACHE.get() {
         if let Ok(mut guard) = cache.lock() {
             if guard.0 != db_dir {
@@ -64,6 +60,87 @@ async fn get_or_connect(db_dir: &str) -> Result<lancedb::Connection, String> {
     }
 
     Ok(conn)
+}
+
+// ── Fix: Cached Table handle — open_table is called only once per table name ───
+//
+// lancedb_search was calling open_table on every invocation — that's a
+// filesystem stat + metadata read on every search across 100 profiling runs.
+// Caching the Table handle eliminates that overhead entirely.
+//
+// Key: "<db_dir>/<table_name>" — invalidated if either changes.
+static TABLE_CACHE: OnceCell<std::sync::Mutex<(String, lancedb::Table)>> = OnceCell::new();
+
+async fn get_or_open_table(db: &lancedb::Connection, db_dir: &str, table_name: &str) -> Result<lancedb::Table, String> {
+    let cache_key = format!("{}/{}", db_dir, table_name);
+
+    if let Some(cache) = TABLE_CACHE.get() {
+        if let Ok(guard) = cache.lock() {
+            if guard.0 == cache_key {
+                return Ok(guard.1.clone());
+            }
+        }
+    }
+
+    let table = db
+        .open_table(table_name)
+        .execute()
+        .await
+        .map_err(|e| format!("Open table failed: {:?}", e))?;
+
+    let _ = TABLE_CACHE.get_or_init(|| {
+        std::sync::Mutex::new((cache_key.clone(), table.clone()))
+    });
+
+    if let Some(cache) = TABLE_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            if guard.0 != cache_key {
+                *guard = (cache_key, table.clone());
+            }
+        }
+    }
+
+    Ok(table)
+}
+
+// ── Fix: fastembed global model — same ONNX runtime as rust_only ───────────────
+//
+// SentenceTransformer (Python/PyTorch) was the bottleneck for embedding.
+// fastembed uses the ONNX Runtime which is significantly faster on CPU.
+// The model is loaded once into a OnceCell and reused across all 100 runs,
+// mirroring exactly how rust_only loads its model outside the loop.
+//
+// Model: AllMiniLML6V2 — 384-dim, matches the LanceDB schema dim below.
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+
+static EMBED_MODEL: OnceCell<TextEmbedding> = OnceCell::new();
+
+fn get_embed_model() -> &'static TextEmbedding {
+    EMBED_MODEL.get_or_init(|| {
+        TextEmbedding::try_new(
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+        )
+        .expect("Failed to load fastembed model")
+    })
+}
+
+/// Load the fastembed model eagerly. Call once at startup from Python
+/// (mirrors embedder::load_model() in rust_only).
+#[pyfunction]
+fn load_embed_model() -> PyResult<()> {
+    get_embed_model(); // triggers OnceCell init
+    Ok(())
+}
+
+/// Embed a batch of texts using fastembed (ONNX Runtime).
+/// Returns Vec<Vec<f32>> — one 384-dim vector per input string.
+#[pyfunction]
+fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
+    let model = get_embed_model();
+    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    model
+        .embed(refs, None)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))
 }
 
 // ── Cosine similarity ──────────────────────────────────────────────────────────
@@ -123,7 +200,6 @@ fn top_k_cosine(query: Vec<f32>, vectors: Vec<Vec<f32>>, k: usize) -> PyResult<V
     Ok(scores)
 }
 
-// ── Fix #3: smart_chunker uses char_indices instead of Vec<char> allocation ────
 #[pyfunction]
 fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec<String>> {
     let mut chunks = Vec::new();
@@ -170,7 +246,6 @@ fn load_pdf_pages(path: String) -> PyResult<Vec<String>> {
     })
 }
 
-// ── Fix #4: lancedb_create_or_open uses global runtime ────────────────────────
 #[pyfunction]
 fn lancedb_create_or_open(
     db_dir: String,
@@ -196,12 +271,19 @@ fn lancedb_create_or_open(
                 .await
                 .map_err(|e| format!("Table create failed: {:?}", e))?;
 
+            // Invalidate the table cache on every insert so the next search
+            // picks up the freshly written table (overwrite changes the snapshot).
+            if let Some(cache) = TABLE_CACHE.get() {
+                if let Ok(mut guard) = cache.lock() {
+                    guard.0 = String::new(); // poison the key
+                }
+            }
+
             Ok::<(), String>(())
         })
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
 }
 
-// ── Fix #5: lancedb_search uses global runtime + cached connection ─────────────
 #[pyfunction]
 fn lancedb_search(
     db_dir: String,
@@ -213,13 +295,9 @@ fn lancedb_search(
         .block_on(async {
             let db = get_or_connect(&db_dir).await?;
 
-            let table = db
-                .open_table(&table_name)
-                .execute()
-                .await
-                .map_err(|e| format!("Open table failed: {:?}", e))?;
+            // Use cached table handle — no open_table on repeat calls
+            let table = get_or_open_table(&db, &db_dir, &table_name).await?;
 
-            // Fix #6: detect distance column type once before the row loop
             let batches = table
                 .query()
                 .limit(top_k)
@@ -343,7 +421,6 @@ fn build_batches(
     Ok(RecordBatchIterator::new(iter, schema))
 }
 
-// ── Fix #6: detect distance column type once, outside the row loop ─────────────
 fn parse_search_results(batches: Vec<RecordBatch>) -> Result<Vec<(String, f32)>, String> {
     let mut results = Vec::new();
 
@@ -359,7 +436,6 @@ fn parse_search_results(batches: Vec<RecordBatch>) -> Result<Vec<(String, f32)>,
             .downcast_ref::<StringArray>()
             .ok_or_else(|| "Invalid 'text' column type".to_string())?;
 
-        // Detect distance column type ONCE per batch, not per row
         let dist_idx = schema.index_of("_distance").ok();
         enum DistCol<'a> {
             F32(&'a Float32Array),
@@ -397,6 +473,8 @@ fn parse_search_results(batches: Vec<RecordBatch>) -> Result<Vec<(String, f32)>,
 
 #[pymodule]
 fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
     m.add_function(wrap_pyfunction!(cosine_similarity, m)?)?;
     m.add_function(wrap_pyfunction!(top_k_cosine, m)?)?;
     m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
