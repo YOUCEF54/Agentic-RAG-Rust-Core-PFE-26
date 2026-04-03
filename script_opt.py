@@ -28,6 +28,8 @@ import torch
 import requests
 import rag_rust
 
+from agents import Generator, Evaluator
+
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
@@ -38,8 +40,8 @@ OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
 OPENROUTER_TITLE        = os.getenv("OPENROUTER_TITLE", "Agentic-RAG-Rust-Core-PFE-26")
 OPENROUTER_TIMEOUT      = 60
 OPENROUTER_CHAT_MODEL   = os.getenv("OPENROUTER_CHAT_MODEL") or os.getenv("MODEL", "openrouter/free")
-EMBED_MODEL_NAME        = "BAAI/bge-small-en-v1.5"
-CHAT_TEMPERATURE        = 0.2
+EMBED_MODEL_NAME        = os.getenv("EMBED_MODEL_NAME")
+CHAT_TEMPERATURE        = os.getenv("CHAT_TEMPERATURE")
 TOP_K                   = 3
 
 # Storage settings
@@ -68,7 +70,7 @@ BENCHMARK_QUERIES = [
 ]
 
 # ── Profiling options ──────────────────────────────────────────────────────────
-RUN_PROFILING = True
+RUN_PROFILING = False
 NUM_RUNS      = 100
 CSV_FILE      = "profile_results.csv"
 CSV_HEADER    = ["run", "pdf_read_ms", "chunking_ms", "model_embedding_ms",
@@ -358,7 +360,20 @@ if __name__ == "__main__":
     log_run_info()
 
     # 4. Query
-    input_query = "what is Samyama?"
+    # input_query = "what is Samyama?"
+    input_query = input("Ask your question...: ")
+
+    state = {
+        "query" : input_query,
+        "answer" : "",
+        "score" : 0.0,
+        "attempts" : 0,
+        "chunks" : [],
+        "should_retry" : False,
+        "model_used" : ""
+        }
+
+
     if not input_query:
         input_query = "What is this document about?"
 
@@ -372,25 +387,34 @@ if __name__ == "__main__":
 
     context_text = "\n".join(f" - {text}" for text, _ in retrieved_knowledge)
 
-    # 5. LLM
-    if RUN_LLM:
-        instruction_prompt = (
-            "You are a helpful chatbot.\n"
-            "Use only the following pieces of context to answer the question. "
-            "Don't make up any new information:\n"
-            f"{context_text}\n"
-        )
-        llm_start = time.perf_counter()
-        response_text, model_used = chat_complete([
-            {"role": "system", "content": instruction_prompt},
-            {"role": "user", "content": input_query},
-        ])
-        print(f"\nChatbot response:\n{response_text}")
-        if model_used:
-            print(f"Chat model used: {model_used}")
-        print(f"LLM time: {(time.perf_counter()-llm_start)*1000:.2f}ms")
 
-    print(f"\nExecution time: {(time.perf_counter()-start_time)*1000:.2f}ms")
+    state["chunks"] = retrieved_knowledge
+    generator_agent = Generator(chat_fn=chat_complete)
+    state = generator_agent.run(state=state)
+
+    print(f"\nChatbot response:\n{state["answer"]}")
+    if state["model_used"]:
+        print(f"Chat model used: {state["model_used"]}")
+
+    # # 5. LLM
+    # if RUN_LLM:
+    #     instruction_prompt = (
+    #         "You are a helpful chatbot.\n"
+    #         "Use only the following pieces of context to answer the question. "
+    #         "Don't make up any new information:\n"
+    #         f"{context_text}\n"
+    #     )
+    #     llm_start = time.perf_counter()
+    #     response_text, model_used = chat_complete([
+    #         {"role": "system", "content": instruction_prompt},
+    #         {"role": "user", "content": input_query},
+    #     ])
+    #     print(f"\nChatbot response:\n{response_text}")
+    #     if model_used:
+    #         print(f"Chat model used: {model_used}")
+    #     print(f"LLM time: {(time.perf_counter()-llm_start)*1000:.2f}ms")
+
+    # print(f"\nExecution time: {(time.perf_counter()-start_time)*1000:.2f}ms")
 
     # 6. Benchmark
     if RUN_BENCHMARK:
