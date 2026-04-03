@@ -35,6 +35,7 @@ data/
 .rag_cache.json
 *.csv
 *.npz
+.fastembed_cache
 
 # Rust
 rag_rust/target/
