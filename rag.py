@@ -2,25 +2,17 @@ import os
 import time
 
 import lancedb
-import requests
+import ollama
 from dotenv import load_dotenv
 from pdf_oxide import PdfDocument
 from semantic_text_splitter import TextSplitter       # pip install semantic-text-splitter
 from sentence_transformers import SentenceTransformer
 
 
-# ── CSV setup ──────────────────────────────────────────────────────────────────
-CSV_FILE = "profile_results.csv"
-CSV_HEADER = "run,pdf_read_ms,chunking_ms,model_embedding_ms,db_insert_ms,search_ms\n"
 
-if not os.path.exists(CSV_FILE):
-    with open(CSV_FILE, "w") as f:
-        f.write(CSV_HEADER)
-
-# ── One-time setup: load env + model outside the loop ─────────────────────────
 load_dotenv()
 api_key    = os.getenv("API_KEY")
-model_name = os.getenv("MODEL")
+OLLAMA_MODEL = "llama3.2"
 pdf_path   = os.getenv("PDF_PATH", "../rust-01/rag-app/data/documents.pdf")
 
 print("Loading embedding model (once)...")
@@ -31,17 +23,10 @@ QUESTION = (
     "does this paper propose to support knowledge management and decision-making?"
 )
 
-# ── 100-iteration profiling loop ───────────────────────────────────────────────
-NUM_RUNS = 100
 context = ""
 
-for run in range(1, NUM_RUNS + 1):
-    print(f"\n{'─' * 50}")
-    print(f"Run {run}/{NUM_RUNS}")
-
-    # 1. PDF read & extract ────────────────────────────────────────────────────
-    t0 = time.perf_counter()
-
+def build_vector_db(pdf_path: str):
+    # 1. Read PDF
     doc = PdfDocument(pdf_path)
     file_content = ""
     page_count = doc.page_count() if callable(doc.page_count) else doc.page_count
@@ -50,29 +35,14 @@ for run in range(1, NUM_RUNS + 1):
         if page_text:
             file_content += page_text + "\n\n"
 
-    pdf_read_ms = (time.perf_counter() - t0) * 1000
-    print(f"  PDF Read & Extract:    {pdf_read_ms:.4f} ms")
-
-    # 2. Text chunking — same splitter as Rust (character-based, capacity=500) ─
-    t0 = time.perf_counter()
-
-    splitter = TextSplitter(500)
+    # 2. Chunk
+    splitter = TextSplitter(1200)   # 1200 chars — same as the paper
     chunks = splitter.chunks(file_content)
 
-    chunking_ms = (time.perf_counter() - t0) * 1000
-    print(f"  Text Chunking:         {chunking_ms:.4f} ms")
-
-    # 3. Bulk embedding ────────────────────────────────────────────────────────
-    t0 = time.perf_counter()
-
+    # 3. Embed
     vectors = embed_model.encode(chunks)
 
-    embedding_ms = (time.perf_counter() - t0) * 1000
-    print(f"  Model/Embedding:       {embedding_ms:.4f} ms")
-
-    # 4. DB insertion (overwrite mode — no drop/recreate needed) ───────────────
-    t0 = time.perf_counter()
-
+    # 4. Store in LanceDB
     db = lancedb.connect("./lance_db")
     data = [
         {"id": str(i), "text": chunks[i], "vector": vectors[i].tolist()}
@@ -80,38 +50,116 @@ for run in range(1, NUM_RUNS + 1):
     ]
     table = db.create_table("docs", data, mode="overwrite")
 
-    db_insert_ms = (time.perf_counter() - t0) * 1000
-    print(f"  DB Init & Insertion:   {db_insert_ms:.4f} ms  ({table.count_rows()} rows)")
+    print(f"✅ Indexed {table.count_rows()} chunks")
+    return table
 
-    # 5. Vector search ─────────────────────────────────────────────────────────
-    t0 = time.perf_counter()
+def retriever(query: str, table, k: int = 3) -> list[str]:
+    query_vector = embed_model.encode(query).tolist()
+    results = table.search(query_vector).limit(k).to_list()
+    chunks = [row["text"] for row in results]
+    return chunks
 
-    query_embedding = embed_model.encode(QUESTION)
-    results = table.search(query_embedding.tolist()).limit(2).to_list()
-    context = "\n\n".join(row["text"] for row in results)
 
-    search_ms = (time.perf_counter() - t0) * 1000
-    print(f"  Search:                {search_ms:.4f} ms")
+table = build_vector_db(pdf_path)
+query = "What framework does the paper propose ?"
+chunks = retriever(query, table)
 
-    # ── Append this run to CSV ─────────────────────────────────────────────────
-    with open(CSV_FILE, "a") as f:
-        f.write(f"{run},{pdf_read_ms:.4f},{chunking_ms:.4f},{embedding_ms:.4f},{db_insert_ms:.4f},{search_ms:.4f}\n")
+for i, chunk in enumerate(chunks):
+    print(f"\n--- Chunk {i+1} ---\n{chunk[:300]}")
 
-# ── Single LLM call after all profiling runs ───────────────────────────────────
-print(f"\n{'─' * 50}")
-print("Running LLM query (single call, not profiled)...")
 
-answer_prompt = (
-    "Use the following context to answer the question.\n\n"
-    f"Context:\n{context}\n\nQuestion: {QUESTION}"
-)
-headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-body    = {"model": model_name, "messages": [{"role": "user", "content": answer_prompt}]}
+def generator(query: str, chunks: list[str]) -> str:
+    context = "\n\n".join(chunks)
+    
+    prompt = f"""Use ONLY the context below to answer the question.
+                    If the context doesn't have enough info, say "Insufficient information".
+                    Keep the answer beginner-friendly and cite which part of the context you used.
+                    
+                    Context:
+                    {context}
+                    
+                   Question: {query}
+               """
+    
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    return response["message"]["content"]
 
-response = requests.post("https://openrouter.ai/api/v1/chat/completions", json=body, headers=headers)
-try:
-    print("\nAnswer:", response.json()["choices"][0]["message"]["content"])
-except Exception:
-    print("\nAnswer:", response.text)
 
-print(f"\nProfiling complete. Results saved to '{CSV_FILE}'.")
+
+def evaluator(query: str, answer: str) -> dict:
+    prompt = f"""You are evaluating an AI-generated answer.
+                
+                Question: {query}
+                Answer: {answer}
+                
+                Check these 3 things:
+                1. Clarity — is it easy to understand?
+                2. Relevance — does it actually answer the question?
+                3. Completeness — is anything important missing?
+                
+                Reply in this exact format:
+                VERDICT: satisfactory
+                REASON: <one sentence>
+                
+                OR
+                
+                VERDICT: unsatisfactory
+                REASON: <one sentence explaining what's missing>
+                """
+
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    raw = response["message"]["content"].strip()
+
+    verdict = "unsatisfactory"
+    reason = ""
+
+    for line in raw.splitlines():
+        if line.startswith("VERDICT:"):
+            verdict = line.replace("VERDICT:", "").strip().lower()
+        if line.startswith("REASON:"):
+            reason = line.replace("REASON:", "").strip()
+
+    return {"verdict": verdict, "reason": reason}
+
+def query_refiner(query: str, reason: str) -> str:
+    prompt = f"""You are rewriting a search query to get a better answer.
+
+Original query: {query}
+Problem with the answer: {reason}
+
+Write an improved version of the query that is more specific and addresses the problem.
+Output ONLY the new query, nothing else.
+"""
+
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response["message"]["content"].strip()
+
+
+
+
+answer = generator(query, chunks)
+evaluation = evaluator(query, answer)
+print("evaluation: \n", evaluation)
+
+
+
+
+
+
+
+
+
+refined = query_refiner(query, "The answer was too vague about the framework type")
+print(refined)
