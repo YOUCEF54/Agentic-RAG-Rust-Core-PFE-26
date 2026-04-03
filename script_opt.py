@@ -41,7 +41,7 @@ OPENROUTER_TITLE        = os.getenv("OPENROUTER_TITLE", "Agentic-RAG-Rust-Core-P
 OPENROUTER_TIMEOUT      = 60
 OPENROUTER_CHAT_MODEL   = os.getenv("OPENROUTER_CHAT_MODEL") or os.getenv("MODEL", "openrouter/free")
 EMBED_MODEL_NAME        = os.getenv("EMBED_MODEL_NAME")
-CHAT_TEMPERATURE        = os.getenv("CHAT_TEMPERATURE")
+CHAT_TEMPERATURE        = float(os.getenv("CHAT_TEMPERATURE"))
 TOP_K                   = 3
 
 # Storage settings
