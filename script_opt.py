@@ -388,14 +388,17 @@ if __name__ == "__main__":
     context_text = "\n".join(f" - {text}" for text, _ in retrieved_knowledge)
 
 
-    state["chunks"] = retrieved_knowledge
+    state['chunks'] = retrieved_knowledge
     generator_agent = Generator(chat_fn=chat_complete)
     state = generator_agent.run(state=state)
 
-    print(f"\nChatbot response:\n{state["answer"]}")
-    if state["model_used"]:
-        print(f"Chat model used: {state["model_used"]}")
+    print(f"\nChatbot response:\n{state['answer']}")
+    if state['model_used']:
+        print(f"Chat model used: {state['model_used']}")
 
+    evaluator_agent = Evaluator()
+    state = evaluator_agent.run(state=state)
+    print(f"score: {state['score']}| retry: {state['should_retry']}")
     # # 5. LLM
     # if RUN_LLM:
     #     instruction_prompt = (
