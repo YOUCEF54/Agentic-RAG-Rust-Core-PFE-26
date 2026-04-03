@@ -1,0 +1,17 @@
+.venv
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+data/
+pdfs/
+lancedb/
+*.pdf
+logs.txt
+log1.txt
+*.csv
+*.ipynb

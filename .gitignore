@@ -1,6 +1,46 @@
-venv
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+*.dist-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 .env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+presentions/
+only_rust/
+
+# Data / outputs
+lance_db/
+lancedb/
+pdfs/
+data/
+*.pdf
+*.log
+*.db
+*.sqlite3
+*.txt
+.rag_cache.json
 *.csv
-lance_db
-__pycache__
 *.npz
+
+# Rust
+rag_rust/target/
+**/target/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
