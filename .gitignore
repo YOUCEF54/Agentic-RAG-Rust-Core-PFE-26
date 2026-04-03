@@ -1,0 +1,6 @@
+venv
+.env
+*.csv
+lance_db
+__pycache__
+*.npz
