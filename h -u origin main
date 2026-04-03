@@ -1,0 +1,29 @@
+[33mcommit 90bfaf323184dd57a6a88799d4033e7c65592078[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: unknown <bazi.brahim.77777@gmail.com>
+Date:   Thu Apr 2 19:32:15 2026 +0100
+
+    adding UserProxy Agent
+
+[33mcommit 8266d64a02eea20a64b6c791a190be9844e87dca[m
+Author: unknown <bazi.brahim.77777@gmail.com>
+Date:   Sat Mar 28 05:30:57 2026 +0100
+
+    adding propper profiling
+
+[33mcommit 074f00969d664cd7333199c99e9e1ada5cf3904e[m
+Author: unknown <bazi.brahim.77777@gmail.com>
+Date:   Fri Mar 27 19:06:37 2026 +0100
+
+    cleaning the code and making it identical to the rust implementation
+
+[33mcommit 9bde1e245663ea665ba504774c4a414d3abbc7e3[m
+Author: unknown <bazi.brahim.77777@gmail.com>
+Date:   Thu Mar 26 05:18:39 2026 +0100
+
+    API call with tools (search) very basic
+
+[33mcommit 5f42db3ff057e95fda7553a500bc9d2a899f86bf[m
+Author: unknown <bazi.brahim.77777@gmail.com>
+Date:   Wed Mar 25 08:05:43 2026 +0100
+
+    Working RAG naive
