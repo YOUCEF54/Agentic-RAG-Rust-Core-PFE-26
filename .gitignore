@@ -36,6 +36,7 @@ data/
 *.csv
 *.npz
 .fastembed_cache
+profiling
 
 # Rust
 rag_rust/target/
