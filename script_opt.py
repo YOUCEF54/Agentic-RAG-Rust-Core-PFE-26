@@ -28,7 +28,7 @@ import torch
 import requests
 import rag_rust
 
-from agents import Generator, Evaluator
+from agents import Generator, Evaluator, QueryRefiner
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -377,15 +377,16 @@ if __name__ == "__main__":
     if not input_query:
         input_query = "What is this document about?"
 
+    refiner = QueryRefiner(chat_fn=chat_complete)
+    state = refiner.run(state)
+
     query_start = time.perf_counter()
-    retrieved_knowledge = retrieve(input_query, top_n=TOP_K)
+    retrieved_knowledge = retrieve(state.get("refined_query") or state["query"], top_n=TOP_K)
     print(f"Retrieval time: {(time.perf_counter()-query_start)*1000:.2f}ms")
 
     print("Retrieved knowledge:")
     for text, distance in retrieved_knowledge:
         print(f" - (distance: {distance:.4f}) {text}")
-
-    context_text = "\n".join(f" - {text}" for text, _ in retrieved_knowledge)
 
 
     state['chunks'] = retrieved_knowledge
