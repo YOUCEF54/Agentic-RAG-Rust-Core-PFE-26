@@ -28,7 +28,7 @@ import torch
 import requests
 import rag_rust
 
-from agents import Generator, Evaluator, QueryRefiner
+from agents import Generator, Evaluator, QueryRefiner, Retriever, UserProxy
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -133,20 +133,28 @@ def openrouter_headers():
         headers["X-Title"] = OPENROUTER_TITLE
     return headers
 
-
-def openrouter_post(path, payload):
-    url = f"{OPENROUTER_BASE_URL}{path}"
-    response = requests.post(
-        url, json=payload, headers=openrouter_headers(), timeout=OPENROUTER_TIMEOUT
-    )
-    if not response.ok:
+def openrouter_post(path, payload, retries=3):
+    for attempt in range(retries):
         try:
-            detail = response.json()
-        except Exception:
-            detail = response.text
-        if response.status_code == 401:
-            raise ValueError("OpenRouter auth failed (401).")
-        raise RuntimeError(f"OpenRouter error {response.status_code}: {detail}")
+            url = f"{OPENROUTER_BASE_URL}{path}"
+            response = requests.post(
+                url, json=payload, headers=openrouter_headers(), timeout=OPENROUTER_TIMEOUT
+            )
+
+            if not response.ok:
+                try:
+                    detail = response.json()
+                except Exception:
+                    detail = response.text
+                if response.status_code == 401:
+                    raise ValueError("OpenRouter auth failed (401).")
+                raise RuntimeError(f"OpenRouter error {response.status_code}: {detail}")
+        except requests.exceptions.ConnectionError:
+                if attempt < retries - 1:
+                    print(f"Connection error, retrying ({attempt+1}/{retries})...")
+                    time.sleep(2)
+                else:
+                    raise
     return response.json()
 
 
@@ -216,10 +224,10 @@ def build_or_open_table(chunks: list, needs_rebuild: bool) -> None:
     rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
 
 
-def retrieve(query: str, top_n: int = TOP_K):
+def retrieve(query: str, top_k: int = TOP_K):
     prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
     query_embedding = embed_texts([prefixed_query])[0]
-    return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, top_n)
+    return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, top_k)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -363,6 +371,9 @@ if __name__ == "__main__":
     # input_query = "what is Samyama?"
     input_query = input("Ask your question...: ")
 
+    if not input_query:
+        input_query = "What is this document about?"
+
     state = {
         "query" : input_query,
         "answer" : "",
@@ -373,32 +384,40 @@ if __name__ == "__main__":
         "model_used" : ""
         }
 
+    # refiner = QueryRefiner(chat_complete)
+    # state = refiner.run(state)
 
-    if not input_query:
-        input_query = "What is this document about?"
+    # query_start = time.perf_counter()
+    # retriever_agent = Retriever(retrieve)
+    # state = retriever_agent.run(state)
+    # retrieved_knowledge = state["chunks"]
+    # print(f"Retrieval time: {(time.perf_counter()-query_start)*1000:.2f}ms")
 
-    refiner = QueryRefiner(chat_fn=chat_complete)
-    state = refiner.run(state)
-
-    query_start = time.perf_counter()
-    retrieved_knowledge = retrieve(state.get("refined_query") or state["query"], top_n=TOP_K)
-    print(f"Retrieval time: {(time.perf_counter()-query_start)*1000:.2f}ms")
-
-    print("Retrieved knowledge:")
-    for text, distance in retrieved_knowledge:
-        print(f" - (distance: {distance:.4f}) {text}")
+    # print("Retrieved knowledge:")
+    # for text, distance in retrieved_knowledge:
+    #     print(f" - (distance: {distance:.4f}) {text}")
 
 
-    state['chunks'] = retrieved_knowledge
-    generator_agent = Generator(chat_fn=chat_complete)
-    state = generator_agent.run(state=state)
+    # state['chunks'] = retrieved_knowledge
+    # generator_agent = Generator(chat_complete)
+    # state = generator_agent.run(state)
+
+    # print(f"\nChatbot response:\n{state['answer']}")
+    # if state['model_used']:
+    #     print(f"Chat model used: {state['model_used']}")
+
+    # evaluator_agent = Evaluator(chat_fn=chat_complete, min_score=0.75)
+    # state = evaluator_agent.run(state)
+    proxy = UserProxy(
+    refiner=QueryRefiner(chat_fn=chat_complete),
+    retriever=Retriever(retrieve_fn=retrieve, top_k=int(os.getenv("TOP_K"))),
+    generator=Generator(chat_fn=chat_complete),
+    evaluator=Evaluator(chat_fn=chat_complete, min_score=0.75),
+    )
+    state = proxy.run(state)
 
     print(f"\nChatbot response:\n{state['answer']}")
-    if state['model_used']:
-        print(f"Chat model used: {state['model_used']}")
-
-    evaluator_agent = Evaluator(chat_fn=chat_complete, min_score=0.75)
-    state = evaluator_agent.run(state=state)
+    print(f"Score: {state['score']} | Attempts: {state['attempts']}")
     print(f"score: {state['score']}| retry: {state['should_retry']}")
     # # 5. LLM
     # if RUN_LLM:

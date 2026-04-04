@@ -6,6 +6,40 @@ class Agent:
     
     def run(self, state: dict) -> dict:
         raise NotImplementedError(f"{self.name}.run() not implemented") 
+
+class UserProxy(Agent):
+    def __init__(self, refiner, retriever, generator, evaluator):
+        super().__init__("UserProxy")
+        self.refiner = refiner
+        self.retriever = retriever
+        self.generator = generator
+        self.evaluator = evaluator
+
+    def run(self, state: dict) -> dict:
+        # run once
+        state = self.refiner.run(state)
+        state = self.retriever.run(state)
+        state = self.generator.run(state)
+        state = self.evaluator.run(state)
+
+        # then retry if needed
+        while state["should_retry"]:
+            state = self.refiner.run(state)
+            state = self.retriever.run(state)
+            state = self.generator.run(state)
+            state = self.evaluator.run(state)
+
+        return state
+
+class Retriever(Agent):
+    def __init__(self, retrieve_fn, top_k):
+        super().__init__("Retriever")
+        self.retrieve_fn = retrieve_fn
+        self.top_k = top_k
+
+    def run(self, state: dict) -> dict:
+        state["chunks"] = self.retrieve_fn(state.get("refined_query") or state["query"], top_k=self.top_k)
+        return state
     
 
 class Generator(Agent):
