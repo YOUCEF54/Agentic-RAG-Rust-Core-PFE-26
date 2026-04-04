@@ -396,7 +396,7 @@ if __name__ == "__main__":
     if state['model_used']:
         print(f"Chat model used: {state['model_used']}")
 
-    evaluator_agent = Evaluator()
+    evaluator_agent = Evaluator(chat_fn=chat_complete, min_score=0.75)
     state = evaluator_agent.run(state=state)
     print(f"score: {state['score']}| retry: {state['should_retry']}")
     # # 5. LLM
