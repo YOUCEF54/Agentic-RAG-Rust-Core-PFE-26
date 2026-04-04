@@ -370,7 +370,8 @@ if __name__ == "__main__":
         "attempts" : 0,
         "chunks" : [],
         "should_retry" : False,
-        "model_used" : ""
+        "model_used" : "",
+        "refined_query" : "" 
         }
 
 
