@@ -21,9 +21,10 @@ class Generator(Agent):
             "Don't make up any new information:\n"
             f"{context}\n"
         )
+        query = state.get("refined_query") or state["query"]
         messages = [
             {"role": "system", "content": instruction_prompt},
-            {"role": "user", "content": state["query"]},
+            {"role": "user", "content": query},
         ]
         answer, model_used = self.chat_fn(messages)
         state["answer"] = answer
@@ -92,4 +93,22 @@ class Evaluator(Agent):
         
         # La condition de retry : score insuffisant ET on a encore des essais disponibles
         state["should_retry"] = (state["score"] < self.min_score) and (state["attempts"] < self.max_attempts)
+        return state
+    
+class QueryRefiner(Agent):
+    def __init__(self, chat_fn):
+        super().__init__("QueryRefiner")
+        self.chat_fn = chat_fn
+
+    def run(self, state: dict) -> dict:
+        prompt = (
+            "Rewrite the user query to be clearer and more specific for retrieval. "
+            "Keep the original intent, do not answer the query, and return only the rewritten query.\n\n"
+            f"User query: {state['query']}"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        refined_query, _ = self.chat_fn(messages)
+        state["refined_query"] = refined_query.strip()
+        print(f"[{self.name}] Original query: {state['query']}")
+        print(f"[{self.name}] Refined query: {state['refined_query']}")
         return state
