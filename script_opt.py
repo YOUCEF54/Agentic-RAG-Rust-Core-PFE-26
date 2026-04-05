@@ -23,12 +23,14 @@ import csv
 import hashlib
 import json
 from pathlib import Path
-
 import torch
 import requests
 import rag_rust
 
 from agents import Generator, Evaluator, QueryRefiner, Retriever, UserProxy
+os.environ["OMP_NUM_THREADS"] = "8"        # i7-6700HQ has 8 threads
+os.environ["OMP_WAIT_POLICY"] = "ACTIVE"
+os.environ["ONNXRUNTIME_FLAGS"] = "0"
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -234,7 +236,7 @@ def retrieve(query: str, top_k: int = TOP_K):
 
 if __name__ == "__main__":
 
-    torch.set_num_threads(os.cpu_count())
+    # torch.set_num_threads(os.cpu_count())
 
     # Collect PDF paths — used by both profiling loop and original pipeline
     if PDF_PATHS:
@@ -249,7 +251,9 @@ if __name__ == "__main__":
 
     # Pre-load fastembed model once (triggers OnceCell in Rust, mirrors rust_only)
     print("Loading fastembed model (once)...")
+
     rag_rust.load_embed_model()
+    
 
     # ══════════════════════════════════════════════════════════════════════════
     # PROFILING LOOP — 100 runs, CSV format identical to rust_only / python_only
@@ -298,6 +302,7 @@ if __name__ == "__main__":
             # 5. Vector search — Rust LanceDB (cached Table handle, no open_table)
             t0 = time.perf_counter()
             query_vec = embed_texts([f"{BGE_QUERY_PREFIX}{QUESTION}"])[0]
+            
             results = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vec, TOP_K)
             profiling_context = "\n\n".join(text for text, _ in results)
             search_ms = (time.perf_counter() - t0) * 1000

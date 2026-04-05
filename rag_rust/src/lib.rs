@@ -114,16 +114,17 @@ async fn get_or_open_table(db: &lancedb::Connection, db_dir: &str, table_name: &
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::sync::Mutex;
 
-static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
+// static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
+static EMBED_MODEL: OnceCell<Arc<TextEmbedding>> = OnceCell::new();
 
-fn get_embed_model() -> &'static Mutex<TextEmbedding> {
+fn get_embed_model() -> Arc<TextEmbedding> {
     EMBED_MODEL.get_or_init(|| {
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::BGESmallENV15)
         )
         .expect("Failed to load fastembed model");
-        Mutex::new(model)
-    })
+        Arc::new(model)
+    }).clone()
 }
 
 /// Load the fastembed model eagerly. Call once at startup from Python
@@ -139,12 +140,9 @@ fn load_embed_model() -> PyResult<()> {
 #[pyfunction]
 fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
     let model = get_embed_model();
-    let mut guard = model
-        .lock()
-        .map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Embed model lock poisoned"))?;
     let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    guard
-        .embed(refs, None)
+    model
+        .embed(refs, Some(256))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))
 }
 
@@ -488,4 +486,17 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_embedding_thread_safety() {
+        fn assert_sync<T: Sync>() {}
+        fn assert_send<T: Send>() {}
+        assert_sync::<TextEmbedding>();
+        assert_send::<TextEmbedding>();
+    }
 }
