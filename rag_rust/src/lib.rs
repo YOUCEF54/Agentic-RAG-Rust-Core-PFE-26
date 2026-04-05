@@ -4,8 +4,9 @@ use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
 use pdf_oxide::pipeline::reading_order::ReadingOrderContext;
 use rayon::prelude::*;
 use std::sync::Arc;
+use std::cell::RefCell;
 use once_cell::sync::OnceCell;
-
+use std::sync::Mutex;
 use arrow_array::types::Float32Type;
 use arrow_array::{
     FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch,
@@ -17,6 +18,15 @@ use lancedb::connection::CreateTableMode;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::connect;
 use tokio::runtime::Runtime;
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+
+thread_local! {
+    static LOCAL_MODEL: RefCell<Option<TextEmbedding>> = RefCell::new(None);
+}
+
+// fn get_local_model() -> &'static std::thread::LocalKey<RefCell<Option<TextEmbedding>>> {
+//     &LOCAL_MODEL
+// }
 
 // ── Global Tokio runtime — created once, reused across all calls ───────────────
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -111,40 +121,47 @@ async fn get_or_open_table(db: &lancedb::Connection, db_dir: &str, table_name: &
 // mirroring exactly how rust_only loads its model outside the loop.
 //
 // Model: BGE Small EN v1.5 — 384-dim, matches the LanceDB schema dim below.
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::sync::Mutex;
+// ── Dans lib.rs ──────────────────────────────────────────────────────────────
 
-// static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
-static EMBED_MODEL: OnceCell<Arc<TextEmbedding>> = OnceCell::new();
+static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 
-fn get_embed_model() -> Arc<TextEmbedding> {
+fn get_embed_model() -> &'static Mutex<TextEmbedding> {
     EMBED_MODEL.get_or_init(|| {
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::BGESmallENV15)
-        )
-        .expect("Failed to load fastembed model");
-        Arc::new(model)
-    }).clone()
+        ).expect("Failed to load fastembed model");
+        Mutex::new(model)
+    })
 }
+
+#[pyfunction]
+fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
+    let model_mutex = get_embed_model();
+    let mut model = model_mutex.lock().map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Lock failed")
+    })?;
+
+    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+    // On passe TOUT le vecteur d'un coup. 
+    // ONNX va paralléliser le calcul matriciel en interne.
+    model
+        .embed(refs, Some(256)) 
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))
+}
+// static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
+// static EMBED_MODEL: OnceCell<Arc<TextEmbedding>> = OnceCell::new();
+// static EMBED_MODEL: OnceCell<Arc<RwLock<TextEmbedding>>> = OnceCell::new();
+
 
 /// Load the fastembed model eagerly. Call once at startup from Python
 /// (mirrors embedder::load_model() in rust_only).
 #[pyfunction]
 fn load_embed_model() -> PyResult<()> {
-    get_embed_model(); // triggers OnceCell init
+    get_embed_model(); // Pré-charge le modèle en mémoire
     Ok(())
 }
 
-/// Embed a batch of texts using fastembed (ONNX Runtime).
-/// Returns Vec<Vec<f32>> — one 384-dim vector per input string.
-#[pyfunction]
-fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
-    let model = get_embed_model();
-    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    model
-        .embed(refs, Some(256))
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))
-}
 
 // ── Cosine similarity ──────────────────────────────────────────────────────────
 fn cosine_similarity_inner(a: &[f32], b: &[f32]) -> Option<f32> {
@@ -488,15 +505,3 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_embedding_thread_safety() {
-        fn assert_sync<T: Sync>() {}
-        fn assert_send<T: Send>() {}
-        assert_sync::<TextEmbedding>();
-        assert_send::<TextEmbedding>();
-    }
-}

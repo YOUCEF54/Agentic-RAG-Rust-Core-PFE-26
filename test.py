@@ -1,21 +1,3 @@
-# from dotenv import load_dotenv
-# import os
-
-# load_dotenv()
-
-# print("RAW:", repr(os.getenv("API_KEY")))
-# with open(".env", "rb") as f:
-#     print(f.read())
-
-# number = 10
-
-
-# def test():
-#     print("the number =======: ", number)
-
-
-
-# test()
 
 import os
 
@@ -43,5 +25,5 @@ these methodologies to enhance the accuracy and relevance of
 technical question answering systems. The contributions of this
 research build upon existing literature while pushing the
 boundaries of what is achievable in the retrieval of technical
-information"""] * 550)
+information"""] * 100)
 print(f"100 chunks: {(time.perf_counter()-t)*1000:.2f}ms")
