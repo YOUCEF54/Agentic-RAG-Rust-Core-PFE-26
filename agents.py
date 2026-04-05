@@ -71,6 +71,44 @@ class Retriever(Agent):
         return state
 
 
+
+
+class UserProxy(Agent):
+    def __init__(self):
+        super().__init__("UserProxy")
+
+    def run(self, query):
+        state = {
+                "query" : query,
+                "answer" : "",
+                "score" : 0.0,
+                "attempts" : 0,
+                "chunks" : [],
+                "should_retry" : False,
+                "model_used" : "",
+                "refined_query" : ""
+        }
+        return state
+
+
+class Retriever(Agent):
+    def __init__(self, search_fn):
+        super().__init__("Retriever")
+        this.search_fn = search_fn
+
+    def run(self, state):
+        state["chunks"] = self.fn_search(query)
+        return state
+
+
+
+
+
+
+
+
+
+
 class Generator(Agent):
     def __init__(self, chat_fn):
         super().__init__("Generator")
