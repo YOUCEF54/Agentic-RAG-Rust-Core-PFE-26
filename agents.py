@@ -69,7 +69,7 @@ class Retriever(Agent):
             {"query_used": query, "top_k": self.top_k, "count": len(state["chunks"])},
         )
         return state
-    
+
 
 
 
