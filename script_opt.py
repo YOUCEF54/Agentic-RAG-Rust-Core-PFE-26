@@ -28,9 +28,9 @@ import requests
 import rag_rust
 
 from agents import Generator, Evaluator, QueryRefiner, Retriever, UserProxy
-os.environ["OMP_NUM_THREADS"] = "8"        # i7-6700HQ has 8 threads
-os.environ["OMP_WAIT_POLICY"] = "ACTIVE"
-os.environ["ONNXRUNTIME_FLAGS"] = "0"
+# os.environ["OMP_NUM_THREADS"] = "8"        # i7-6700HQ has 8 threads
+# os.environ["OMP_WAIT_POLICY"] = "ACTIVE"
+# os.environ["ONNXRUNTIME_FLAGS"] = "0"
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -160,10 +160,32 @@ def openrouter_post(path, payload, retries=3):
     return response.json()
 
 
-def embed_texts(texts: list) -> list:
-    """Embed via fastembed ONNX runtime in Rust — same engine as rust_only."""
-    return rag_rust.embed_texts_rust(texts)
+# def embed_texts(texts: list) -> list:
+#     """Embed via fastembed ONNX runtime in Rust — same engine as rust_only."""
+#     return rag_rust.embed_texts_rust(texts)
+# ── Dans script_opt.py ────────────────────────────────────────────────────────
 
+def embed_texts(texts: list) -> list:
+    """Ajoute le préfixe BGE et envoie le batch complet à Rust."""
+    # BGE-small nécessite un préfixe pour les passages indexés
+    prefixed_texts = [f"passage: {t}" for t in texts]
+    return rag_rust.embed_texts_rust(prefixed_texts)
+
+def build_or_open_table(chunks: list, needs_rebuild: bool) -> None:
+    if not needs_rebuild:
+        print("DB is up-to-date, skipping.")
+        return
+
+    print(f"Embedding {len(chunks)} chunks...")
+    embed_start = time.perf_counter()
+    
+    # APPEL UNIQUE : On envoie la liste complète ici
+    embeddings = embed_texts(chunks) 
+    
+    embed_time = time.perf_counter() - embed_start
+    print(f"Embedding time: {embed_time*1000:.2f}ms ({len(chunks)/embed_time:.2f} chunks/s)")
+
+    rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
 
 def chat_complete(messages):
     data = openrouter_post(
@@ -213,17 +235,17 @@ def log_run_info():
     print("================")
 
 
-def build_or_open_table(chunks: list, needs_rebuild: bool) -> None:
-    if not needs_rebuild:
-        print("DB is up-to-date, skipping embed + insert.")
-        return
+# def build_or_open_table(chunks: list, needs_rebuild: bool) -> None:
+#     if not needs_rebuild:
+#         print("DB is up-to-date, skipping embed + insert.")
+#         return
 
-    embed_start = time.perf_counter()
-    embeddings = embed_texts(chunks)
-    embed_time = time.perf_counter() - embed_start
-    print(f"Embedding time: {embed_time*1000:.2f}ms ({len(chunks)/embed_time:.2f} chunks/s)")
+#     embed_start = time.perf_counter()
+#     embeddings = embed_texts(chunks)
+#     embed_time = time.perf_counter() - embed_start
+#     print(f"Embedding time: {embed_time*1000:.2f}ms ({len(chunks)/embed_time:.2f} chunks/s)")
 
-    rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
+#     rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
 
 
 def retrieve(query: str, top_k: int = TOP_K):
@@ -389,30 +411,6 @@ if __name__ == "__main__":
         "model_used" : ""
         }
 
-    # refiner = QueryRefiner(chat_complete)
-    # state = refiner.run(state)
-
-    # query_start = time.perf_counter()
-    # retriever_agent = Retriever(retrieve)
-    # state = retriever_agent.run(state)
-    # retrieved_knowledge = state["chunks"]
-    # print(f"Retrieval time: {(time.perf_counter()-query_start)*1000:.2f}ms")
-
-    # print("Retrieved knowledge:")
-    # for text, distance in retrieved_knowledge:
-    #     print(f" - (distance: {distance:.4f}) {text}")
-
-
-    # state['chunks'] = retrieved_knowledge
-    # generator_agent = Generator(chat_complete)
-    # state = generator_agent.run(state)
-
-    # print(f"\nChatbot response:\n{state['answer']}")
-    # if state['model_used']:
-    #     print(f"Chat model used: {state['model_used']}")
-
-    # evaluator_agent = Evaluator(chat_fn=chat_complete, min_score=0.75)
-    # state = evaluator_agent.run(state)
     proxy = UserProxy(
     refiner=QueryRefiner(chat_fn=chat_complete),
     retriever=Retriever(retrieve_fn=retrieve, top_k=int(os.getenv("TOP_K"))),
@@ -424,27 +422,8 @@ if __name__ == "__main__":
     print(f"\nChatbot response:\n{state['answer']}")
     print(f"Score: {state['score']} | Attempts: {state['attempts']}")
     print(f"score: {state['score']}| retry: {state['should_retry']}")
-    # # 5. LLM
-    # if RUN_LLM:
-    #     instruction_prompt = (
-    #         "You are a helpful chatbot.\n"
-    #         "Use only the following pieces of context to answer the question. "
-    #         "Don't make up any new information:\n"
-    #         f"{context_text}\n"
-    #     )
-    #     llm_start = time.perf_counter()
-    #     response_text, model_used = chat_complete([
-    #         {"role": "system", "content": instruction_prompt},
-    #         {"role": "user", "content": input_query},
-    #     ])
-    #     print(f"\nChatbot response:\n{response_text}")
-    #     if model_used:
-    #         print(f"Chat model used: {model_used}")
-    #     print(f"LLM time: {(time.perf_counter()-llm_start)*1000:.2f}ms")
-
-    # print(f"\nExecution time: {(time.perf_counter()-start_time)*1000:.2f}ms")
-
-    # 6. Benchmark
+    
+    # 5. Benchmark
     if RUN_BENCHMARK:
         total_queries = BENCHMARK_ITERS * len(BENCHMARK_QUERIES)
         bench_start = time.perf_counter()
