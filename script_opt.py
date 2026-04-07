@@ -25,12 +25,26 @@ import json
 from pathlib import Path
 import torch
 import requests
-import rag_rust
 
 from agents import Generator, Evaluator, QueryRefiner, Retriever, UserProxy
-# os.environ["OMP_NUM_THREADS"] = "8"        # i7-6700HQ has 8 threads
-# os.environ["OMP_WAIT_POLICY"] = "ACTIVE"
-# os.environ["ONNXRUNTIME_FLAGS"] = "0"
+# --- AJUSTEMENT POUR ÉVITER LA SUR-SOUSCRIPTION (i7-6700HQ) ---
+# IMPORTANT: ces variables doivent être définies avant l'import de rag_rust.
+os.environ.setdefault("EMBED_THREADS", "6")
+os.environ.setdefault("EMBED_CHUNK_SIZE", "32")
+os.environ.setdefault("EMBED_BATCH_SIZE", "32")
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAX_THREADS", "1")
+
+
+# Désactive les flags de télémétrie ONNX qui peuvent ralentir l'initialisation
+os.environ["ONNXRUNTIME_FLAGS"] = "0" 
+# ----------------------------------------
+
+import rag_rust
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -49,7 +63,7 @@ TOP_K                   = 3
 # Storage settings
 DB_DIR     = os.getenv("DB_DIR", "lancedb")
 TABLE_NAME = "pdf_chunks"
-REBUILD_DB = False
+REBUILD_DB = True
 
 # Cache settings
 CACHE_FILE = ".rag_cache.json"
@@ -171,12 +185,32 @@ def embed_texts(texts: list) -> list:
     prefixed_texts = [f"passage: {t}" for t in texts]
     return rag_rust.embed_texts_rust(prefixed_texts)
 
+def warmup_embedder() -> None:
+    """Warm up embedding threads to avoid counting model init time."""
+    try:
+        warmup_iters = int(os.getenv("EMBED_WARMUP", "1"))
+    except ValueError:
+        warmup_iters = 1
+    if warmup_iters <= 0:
+        return
+
+    try:
+        warmup_batch = int(os.getenv("EMBED_CHUNK_SIZE", "64"))
+    except ValueError:
+        warmup_batch = 64
+    warmup_batch = max(1, warmup_batch)
+
+    print(f"Warming up embedder ({warmup_iters}x{warmup_batch})...")
+    for _ in range(warmup_iters):
+        rag_rust.embed_texts_rust(["warmup"] * warmup_batch)
+
 def build_or_open_table(chunks: list, needs_rebuild: bool) -> None:
     if not needs_rebuild:
         print("DB is up-to-date, skipping.")
         return
 
     print(f"Embedding {len(chunks)} chunks...")
+    warmup_embedder()
     embed_start = time.perf_counter()
     
     # APPEL UNIQUE : On envoie la liste complète ici
@@ -231,6 +265,14 @@ def log_run_info():
     print(f"Chat model   : {OPENROUTER_CHAT_MODEL}")
     print(f"Embed model  : {EMBED_MODEL_NAME}")
     print(f"Chunk size   : {CHUNK_SIZE} | overlap: {CHUNK_OVERLAP}")
+    print(
+        "Embed config: threads=%s chunk=%s batch=%s"
+        % (
+            os.getenv("EMBED_THREADS"),
+            os.getenv("EMBED_CHUNK_SIZE"),
+            os.getenv("EMBED_BATCH_SIZE"),
+        )
+    )
     print("Embed engine : fastembed ONNX (Rust)")
     print("================")
 

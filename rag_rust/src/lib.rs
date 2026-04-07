@@ -3,6 +3,8 @@ use pdf_oxide::PdfDocument;
 use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
 use pdf_oxide::pipeline::reading_order::ReadingOrderContext;
 use rayon::prelude::*;
+use rayon::ThreadPool;
+use rayon::ThreadPoolBuilder;
 use std::sync::Arc;
 use std::cell::RefCell;
 use once_cell::sync::OnceCell;
@@ -19,9 +21,72 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::connect;
 use tokio::runtime::Runtime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-
+use std::sync::RwLock;
+// thread_local! {
+//     static LOCAL_MODEL: RefCell<Option<TextEmbedding>> = RefCell::new(None);
+// }
 thread_local! {
-    static LOCAL_MODEL: RefCell<Option<TextEmbedding>> = RefCell::new(None);
+    // We wrap the model in a RefCell to allow mutable access within the thread
+    static MODEL: RefCell<TextEmbedding> = RefCell::new(
+        TextEmbedding::try_new(
+            // WORKAROUND: Using the Quantized (Q) model for older CPUs
+            InitOptions::new(EmbeddingModel::BGESmallENV15Q)
+        ).expect("Failed to load quantized model")
+    );
+}
+
+// Embedding chunk/batch config (override via env):
+// - EMBED_CHUNK_SIZE: number of texts per chunk (default 32)
+// - EMBED_BATCH_SIZE: internal batch size passed to fastembed (default = chunk size)
+static EMBED_CONFIG: OnceCell<(usize, Option<usize>)> = OnceCell::new();
+static EMBED_POOL: OnceCell<ThreadPool> = OnceCell::new();
+
+fn embed_config() -> (usize, Option<usize>) {
+    *EMBED_CONFIG.get_or_init(|| {
+        // Defaults tuned for mid-range laptop CPU + 16GB RAM (e.g., i7-6700HQ).
+        // We keep chunk size moderate to avoid long single-batch latency and memory spikes.
+        let chunk_size = std::env::var("EMBED_CHUNK_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(32);
+
+        let batch_size = match std::env::var("EMBED_BATCH_SIZE") {
+            Ok(v) => {
+                let v = v.trim();
+                if v.eq_ignore_ascii_case("none") || v == "0" {
+                    None
+                } else {
+                    v.parse::<usize>().ok().filter(|&n| n > 0)
+                }
+            }
+            Err(_) => Some(chunk_size),
+        };
+
+        (chunk_size, batch_size)
+    })
+}
+
+fn embed_pool() -> &'static ThreadPool {
+    EMBED_POOL.get_or_init(|| {
+        let max_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+
+        // Default thread count to reduce oversubscription on CPUs with 4 physical cores.
+        // Can be overridden via EMBED_THREADS.
+        let default_threads = if max_threads >= 8 { 4 } else if max_threads >= 4 { 2 } else { 1 };
+        let threads = std::env::var("EMBED_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(default_threads);
+
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("Failed to build embedding thread pool")
+    })
 }
 
 // fn get_local_model() -> &'static std::thread::LocalKey<RefCell<Option<TextEmbedding>>> {
@@ -122,32 +187,68 @@ async fn get_or_open_table(db: &lancedb::Connection, db_dir: &str, table_name: &
 //
 // Model: BGE Small EN v1.5 — 384-dim, matches the LanceDB schema dim below.
 // ── Dans lib.rs ──────────────────────────────────────────────────────────────
-
+// 
 static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
+// static EMBED_MODEL: OnceCell<RwLock<TextEmbedding>> = OnceCell::new();
 
 fn get_embed_model() -> &'static Mutex<TextEmbedding> {
     EMBED_MODEL.get_or_init(|| {
+        // let model = TextEmbedding::try_new(
+        //     InitOptions::new(EmbeddingModel::BGESmallENV15)
+        // ).expect("Failed to load fastembed model");
         let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::BGESmallENV15)
-        ).expect("Failed to load fastembed model");
+            InitOptions::new(EmbeddingModel::BGESmallENV15Q) // Added 'Q' for Quantized
+        ).expect("Failed to load quantized model");
         Mutex::new(model)
     })
 }
 
+// Use the thread_local block you already have at the top of your lib.rs
 #[pyfunction]
-fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
-    let model_mutex = get_embed_model();
-    let mut model = model_mutex.lock().map_err(|_| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Lock failed")
+fn embed_texts_rust(py: Python<'_>, texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total = texts.len();
+    let (chunk_size, batch_size) = embed_config();
+
+    let chunked: Result<Vec<(usize, Vec<Vec<f32>>)>, String> = py.allow_threads(|| {
+        let pool = embed_pool();
+        pool.install(|| {
+            texts
+                .par_chunks(chunk_size)
+                .enumerate()
+                .map(|(idx, chunk)| {
+                    let mut chunk_refs: Vec<&str> = Vec::with_capacity(chunk.len());
+                    for s in chunk {
+                        chunk_refs.push(s.as_str());
+                    }
+
+                    MODEL.with(|model_cell| {
+                        let mut model = model_cell.borrow_mut();
+                        model
+                            .embed(chunk_refs, batch_size)
+                            .map(|embeds| (idx, embeds))
+                            .map_err(|e| format!("{:?}", e))
+                    })
+                })
+                .collect()
+        })
+    });
+
+    let mut chunked = chunked.map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)
     })?;
 
-    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    // Preserve input order after parallel embedding
+    chunked.sort_by_key(|(idx, _)| *idx);
+    let mut all_embeddings = Vec::with_capacity(total);
+    for (_, mut embeds) in chunked {
+        all_embeddings.append(&mut embeds);
+    }
 
-    // On passe TOUT le vecteur d'un coup. 
-    // ONNX va paralléliser le calcul matriciel en interne.
-    model
-        .embed(refs, Some(256)) 
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e)))
+    Ok(all_embeddings)
 }
 // static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 // static EMBED_MODEL: OnceCell<Arc<TextEmbedding>> = OnceCell::new();
@@ -158,10 +259,10 @@ fn embed_texts_rust(texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
 /// (mirrors embedder::load_model() in rust_only).
 #[pyfunction]
 fn load_embed_model() -> PyResult<()> {
-    get_embed_model(); // Pré-charge le modèle en mémoire
+    // This triggers the lazy initialization on the main thread
+    MODEL.with(|_| {}); 
     Ok(())
 }
-
 
 // ── Cosine similarity ──────────────────────────────────────────────────────────
 fn cosine_similarity_inner(a: &[f32], b: &[f32]) -> Option<f32> {
@@ -229,7 +330,6 @@ fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec
 
     while current_pos < total {
         let mut end_pos = std::cmp::min(current_pos + max_chars, total);
-
         if end_pos < total {
             let lookback_range = if end_pos > current_pos + (max_chars / 2) {
                 max_chars / 2
@@ -244,13 +344,11 @@ fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec
                 end_pos = (end_pos - lookback_range) + pos + 1;
             }
         }
-
         let chunk: String = chars[current_pos..end_pos].iter().collect();
         let trimmed = chunk.trim().to_string();
         if !trimmed.is_empty() {
             chunks.push(trimmed);
         }
-
         current_pos = end_pos;
         if current_pos < total && current_pos > overlap {
             current_pos -= overlap;
