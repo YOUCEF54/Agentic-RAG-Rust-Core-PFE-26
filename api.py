@@ -8,6 +8,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+os.environ["OMP_NUM_THREADS"] = "4"        
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAX_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
+# Désactive les flags de télémétrie ONNX qui peuvent ralentir l'initialisation
+os.environ["ONNXRUNTIME_FLAGS"] = "0" 
+# ----------------------------------------
 import re
 import shutil
 import time
@@ -20,8 +29,6 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
-
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy
 
@@ -33,10 +40,9 @@ META_PATH = Path("data/metadata.json")
 DB_DIR = "lancedb"
 TABLE_NAME = "pdf_chunks"
 
-# Embeddings
+# Embeddings (Rust fastembed)
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-EMBED_BATCH_SIZE = 32
-EMBED_NORMALIZE = True
+BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 # Chunking
 CHUNK_SIZE = 800
@@ -53,7 +59,6 @@ CHAT_TEMPERATURE = 0.2
 
 app = FastAPI(title=APP_NAME)
 
-_EMBEDDER: Optional[SentenceTransformer] = None
 _INDEX_READY = False
 _INDEX_STATUS = "idle"  # idle | building | ready | stale | error
 _INDEX_INFO: Dict[str, Any] = {
@@ -64,6 +69,7 @@ _INDEX_INFO: Dict[str, Any] = {
   "last_error": None,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+_EMBED_MODEL_READY = False
 
 # CORS (frontend integration)
 # _cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
@@ -200,24 +206,25 @@ def sse_event(event: str, data: Any) -> str:
   return f"event: {event}\ndata: {payload}\n\n"
 
 
-def get_embedder() -> SentenceTransformer:
-  global _EMBEDDER
-  if _EMBEDDER is None:
-    if HF_TOKEN:
-      _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME, token=HF_TOKEN)
-    else:
-      _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
-  return _EMBEDDER
+def ensure_embed_model_loaded() -> None:
+  global _EMBED_MODEL_READY
+  if not _EMBED_MODEL_READY:
+    rag_rust.load_embed_model()
+    _EMBED_MODEL_READY = True
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-  embedder = get_embedder()
-  vectors = embedder.encode(
-    texts,
-    batch_size=EMBED_BATCH_SIZE,
-    normalize_embeddings=EMBED_NORMALIZE,
-  )
-  return vectors.tolist()
+  """Embed indexed passages via Rust fastembed (BGE expects 'passage:' prefix)."""
+  ensure_embed_model_loaded()
+  prefixed_texts = [f"passage: {t}" for t in texts]
+  return rag_rust.embed_texts_rust(prefixed_texts)
+
+
+def embed_query(query: str) -> List[float]:
+  """Embed query via Rust fastembed with BGE query prefix."""
+  ensure_embed_model_loaded()
+  prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
+  return rag_rust.embed_texts_rust([prefixed_query])[0]
 
 
 def load_pdf_pages_with_meta(max_pages: Optional[int]) -> List[Dict[str, Any]]:
@@ -475,7 +482,7 @@ def query(payload: QueryRequest):
     raise HTTPException(status_code=400, detail="Index not built. Call /index first.")
 
   def retrieve_chunks_with_meta(query: str, top_k: int) -> tuple[List[tuple], List[Dict[str, Any]]]:
-    query_vector = embed_texts([query])[0]
+    query_vector = embed_query(query)
     try:
       hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, top_k)
     except Exception as exc:
@@ -567,7 +574,7 @@ def query_stream(payload: QueryRequest):
     raise HTTPException(status_code=400, detail="Index not built. Call /index first.")
 
   def retrieve_chunks_with_meta(query: str, top_k: int) -> tuple[List[tuple], List[Dict[str, Any]]]:
-    query_vector = embed_texts([query])[0]
+    query_vector = embed_query(query)
     try:
       hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, top_k)
     except Exception as exc:

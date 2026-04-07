@@ -1,29 +1,92 @@
+# import os
+# import time
+# import rag_rust
+
+# # --- UNLEASH THE CPU ---
+# # Remove the "2" thread limits. Let it use all 8 logical processors.
+# # os.environ["MKL_NUM_THREADS"] = "2"
+# # os.environ["OMP_NUM_THREADS"] = "2"
+# rag_rust.load_embed_model()
+
+# # Warm-up (The first call will be slow as it loads models into threads)
+# # rag_rust.embed_texts_rust(["warmup"] * 10)
+
+# t = time.perf_counter()
+# # Processing 101 texts
+# results = rag_rust.embed_texts_rust(["""prompt tuning allows models to retain general knowledge while
+# adapting to specialized content. This approach has shown
+# promise across various NLP tasks; however, its potential for
+# improving retrieval performance in technical question
+# answering remains underexplored.
+# Despite the progress in these areas, there remains a need for
+# comprehensive frameworks that integrate synthetic query
+# generation, refined parsing, and adapter tuning to optimize
+# retrieval in technical domains. Our work addresses this gap by
+# presenting Technical-Embeddings, a framework that combines
+# these methodologies to enhance the accuracy and relevance of
+# technical question answering systems. The contributions of this
+# research build upon existing literature while pushing the
+# boundaries of what is achievable in the retrieval of technical
+# information"""] * 101)
+
+# print(f"Final Time: {(time.perf_counter() - t) * 1000:.2f}ms")
 
 import os
-
-import rag_rust
 import time
 
-# warm up — loads model into OnceCell
-os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())
-os.environ["OMP_WAIT_POLICY"] = "ACTIVE"   
-rag_rust.load_embed_model()
+# ---- Embedding performance config (BGE Small defaults) ----
+# These can be overridden from the shell before running:
+#   PowerShell example:
+#     $env:EMBED_THREADS=2
+#     $env:EMBED_CHUNK_SIZE=64
+#     $env:EMBED_BATCH_SIZE=64
+#     python test.py
+os.environ.setdefault("EMBED_THREADS", "4")
+os.environ.setdefault("EMBED_CHUNK_SIZE", "64")
+os.environ.setdefault("EMBED_BATCH_SIZE", "64")
 
-# larger batch with 810 characters
+# Prevent thread oversubscription on i7-6700HQ
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAX_THREADS", "1")
+
+import rag_rust
+
+
+# Force the CPU to work before the timer starts
+print("Waking up CPU...")
+rag_rust.load_embed_model()
+for _ in range(3):
+    rag_rust.embed_texts_rust(["warmup"] * 64)
+
+print(
+    "Config:",
+    "EMBED_THREADS=", os.environ.get("EMBED_THREADS"),
+    "EMBED_CHUNK_SIZE=", os.environ.get("EMBED_CHUNK_SIZE"),
+    "EMBED_BATCH_SIZE=", os.environ.get("EMBED_BATCH_SIZE"),
+    "OMP_NUM_THREADS=", os.environ.get("OMP_NUM_THREADS"),
+)
+
+# The actual test
+num_texts = 256
+payload = (
+    "ONNX Runtime already squeezes a lot of parallelism out of the CPU, so the fastest "
+    "setup is often one process with many ORT threads. It keeps one shared copy of "
+    "can reduce throughput because it increases memory-bandwidth pressure, cache misses, "
+    "weights, stays cache-friendly, and avoids IPC overhead. Spinning up many processes "
+    "and can trigger thread oversubscription (ORT + MKL/OpenMP/OpenBLAS) unless you cap threads."
+)
+
 t = time.perf_counter()
-rag_rust.embed_texts_rust(["""prompt tuning allows models to retain general knowledge while
-adapting to specialized content. This approach has shown
-promise across various NLP tasks; however, its potential for
-improving retrieval performance in technical question
-answering remains underexplored.
-Despite the progress in these areas, there remains a need for
-comprehensive frameworks that integrate synthetic query
-generation, refined parsing, and adapter tuning to optimize
-retrieval in technical domains. Our work addresses this gap by
-presenting Technical-Embeddings, a framework that combines
-these methodologies to enhance the accuracy and relevance of
-technical question answering systems. The contributions of this
-research build upon existing literature while pushing the
-boundaries of what is achievable in the retrieval of technical
-information"""] * 100)
-print(f"100 chunks: {(time.perf_counter()-t)*1000:.2f}ms")
+_ = rag_rust.embed_texts_rust([payload] * num_texts)
+duration_s = time.perf_counter() - t
+duration_ms = duration_s * 1000
+chunks_per_s = num_texts / duration_s if duration_s > 0 else 0.0
+
+print(f"Final Time: {duration_ms:.2f}ms")
+print(f"Throughput: {chunks_per_s:.2f} chunks/s")
+
+if duration_ms > 3000:
+    print("NOTE: If performance is low, check CPU clock speed and power plan.")
