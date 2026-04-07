@@ -25,6 +25,7 @@ import json
 from pathlib import Path
 import torch
 import requests
+from dotenv import load_dotenv
 
 from agents import Generator, Evaluator, QueryRefiner, Retriever, UserProxy
 # --- AJUSTEMENT POUR ÉVITER LA SUR-SOUSCRIPTION (i7-6700HQ) ---
@@ -49,6 +50,29 @@ import rag_rust
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
+
+
+def get_env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be a float, got: {value!r}") from exc
+
+
+def get_env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be an integer, got: {value!r}") from exc
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY      = os.getenv("OPENROUTER_API_KEY") or os.getenv("API_KEY")
 OPENROUTER_BASE_URL     = "https://openrouter.ai/api/v1"
@@ -56,9 +80,9 @@ OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
 OPENROUTER_TITLE        = os.getenv("OPENROUTER_TITLE", "Agentic-RAG-Rust-Core-PFE-26")
 OPENROUTER_TIMEOUT      = 60
 OPENROUTER_CHAT_MODEL   = os.getenv("OPENROUTER_CHAT_MODEL") or os.getenv("MODEL", "openrouter/free")
-EMBED_MODEL_NAME        = os.getenv("EMBED_MODEL_NAME")
-CHAT_TEMPERATURE        = float(os.getenv("CHAT_TEMPERATURE"))
-TOP_K                   = 3
+EMBED_MODEL_NAME        = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
+CHAT_TEMPERATURE        = get_env_float("CHAT_TEMPERATURE", 0.2)
+TOP_K                   = get_env_int("TOP_K", 3)
 
 # Storage settings
 DB_DIR     = os.getenv("DB_DIR", "lancedb")
@@ -456,7 +480,7 @@ if __name__ == "__main__":
 
     proxy = UserProxy(
     refiner=QueryRefiner(chat_fn=chat_complete),
-    retriever=Retriever(retrieve_fn=retrieve, top_k=int(os.getenv("TOP_K"))),
+    retriever=Retriever(retrieve_fn=retrieve, top_k=TOP_K),
     generator=Generator(chat_fn=chat_complete),
     evaluator=Evaluator(chat_fn=chat_complete, min_score=0.75),
     )
