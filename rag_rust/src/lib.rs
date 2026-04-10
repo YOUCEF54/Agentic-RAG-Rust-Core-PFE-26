@@ -1,15 +1,11 @@
-use pyo3::prelude::*;
+﻿use pyo3::prelude::*;
 use pdf_oxide::PdfDocument;
 use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
 use pdf_oxide::pipeline::reading_order::ReadingOrderContext;
 use rayon::prelude::*;
-use rayon::ThreadPool;
-use rayon::ThreadPoolBuilder;
-use std::sync::Arc;
-use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use once_cell::sync::OnceCell;
-use std::sync::Mutex;
-use arrow_array::types::Float32Type;
 use arrow_array::{
     FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch,
     RecordBatchIterator, StringArray,
@@ -21,79 +17,10 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::connect;
 use tokio::runtime::Runtime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::sync::RwLock;
-// thread_local! {
-//     static LOCAL_MODEL: RefCell<Option<TextEmbedding>> = RefCell::new(None);
-// }
-thread_local! {
-    // We wrap the model in a RefCell to allow mutable access within the thread
-    static MODEL: RefCell<TextEmbedding> = RefCell::new(
-        TextEmbedding::try_new(
-            // WORKAROUND: Using the Quantized (Q) model for older CPUs
-            InitOptions::new(EmbeddingModel::BGESmallENV15Q)
-        ).expect("Failed to load quantized model")
-    );
-}
 
-// Embedding chunk/batch config (override via env):
-// - EMBED_CHUNK_SIZE: number of texts per chunk (default 32)
-// - EMBED_BATCH_SIZE: internal batch size passed to fastembed (default = chunk size)
-static EMBED_CONFIG: OnceCell<(usize, Option<usize>)> = OnceCell::new();
-static EMBED_POOL: OnceCell<ThreadPool> = OnceCell::new();
+const EMBED_BATCH_SIZE: usize = 64;
 
-fn embed_config() -> (usize, Option<usize>) {
-    *EMBED_CONFIG.get_or_init(|| {
-        // Defaults tuned for mid-range laptop CPU + 16GB RAM (e.g., i7-6700HQ).
-        // We keep chunk size moderate to avoid long single-batch latency and memory spikes.
-        let chunk_size = std::env::var("EMBED_CHUNK_SIZE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(32);
-
-        let batch_size = match std::env::var("EMBED_BATCH_SIZE") {
-            Ok(v) => {
-                let v = v.trim();
-                if v.eq_ignore_ascii_case("none") || v == "0" {
-                    None
-                } else {
-                    v.parse::<usize>().ok().filter(|&n| n > 0)
-                }
-            }
-            Err(_) => Some(chunk_size),
-        };
-
-        (chunk_size, batch_size)
-    })
-}
-
-fn embed_pool() -> &'static ThreadPool {
-    EMBED_POOL.get_or_init(|| {
-        let max_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-
-        // Default thread count to reduce oversubscription on CPUs with 4 physical cores.
-        // Can be overridden via EMBED_THREADS.
-        let default_threads = if max_threads >= 8 { 4 } else if max_threads >= 4 { 2 } else { 1 };
-        let threads = std::env::var("EMBED_THREADS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(default_threads);
-
-        ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("Failed to build embedding thread pool")
-    })
-}
-
-// fn get_local_model() -> &'static std::thread::LocalKey<RefCell<Option<TextEmbedding>>> {
-//     &LOCAL_MODEL
-// }
-
-// ── Global Tokio runtime — created once, reused across all calls ───────────────
+static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
 fn get_runtime() -> &'static Runtime {
@@ -105,220 +32,41 @@ fn get_runtime() -> &'static Runtime {
     })
 }
 
-// ── Cached DB connection — reconnects only when db_dir changes ─────────────────
-static DB_CACHE: OnceCell<std::sync::Mutex<(String, lancedb::Connection)>> = OnceCell::new();
-
-async fn get_or_connect(db_dir: &str) -> Result<lancedb::Connection, String> {
-    if let Some(cache) = DB_CACHE.get() {
-        if let Ok(guard) = cache.lock() {
-            if guard.0 == db_dir {
-                return Ok(guard.1.clone());
-            }
-        }
-    }
-
-    let conn = connect(db_dir)
-        .execute()
-        .await
-        .map_err(|e| format!("DB connect failed: {:?}", e))?;
-
-    let _ = DB_CACHE.get_or_init(|| {
-        std::sync::Mutex::new((db_dir.to_string(), conn.clone()))
-    });
-
-    if let Some(cache) = DB_CACHE.get() {
-        if let Ok(mut guard) = cache.lock() {
-            if guard.0 != db_dir {
-                *guard = (db_dir.to_string(), conn.clone());
-            }
-        }
-    }
-
-    Ok(conn)
-}
-
-// ── Fix: Cached Table handle — open_table is called only once per table name ───
-//
-// lancedb_search was calling open_table on every invocation — that's a
-// filesystem stat + metadata read on every search across 100 profiling runs.
-// Caching the Table handle eliminates that overhead entirely.
-//
-// Key: "<db_dir>/<table_name>" — invalidated if either changes.
-static TABLE_CACHE: OnceCell<std::sync::Mutex<(String, lancedb::Table)>> = OnceCell::new();
-
-async fn get_or_open_table(db: &lancedb::Connection, db_dir: &str, table_name: &str) -> Result<lancedb::Table, String> {
-    let cache_key = format!("{}/{}", db_dir, table_name);
-
-    if let Some(cache) = TABLE_CACHE.get() {
-        if let Ok(guard) = cache.lock() {
-            if guard.0 == cache_key {
-                return Ok(guard.1.clone());
-            }
-        }
-    }
-
-    let table = db
-        .open_table(table_name)
-        .execute()
-        .await
-        .map_err(|e| format!("Open table failed: {:?}", e))?;
-
-    let _ = TABLE_CACHE.get_or_init(|| {
-        std::sync::Mutex::new((cache_key.clone(), table.clone()))
-    });
-
-    if let Some(cache) = TABLE_CACHE.get() {
-        if let Ok(mut guard) = cache.lock() {
-            if guard.0 != cache_key {
-                *guard = (cache_key, table.clone());
-            }
-        }
-    }
-
-    Ok(table)
-}
-
-// ── Fix: fastembed global model — same ONNX runtime as rust_only ───────────────
-//
-// SentenceTransformer (Python/PyTorch) was the bottleneck for embedding.
-// fastembed uses the ONNX Runtime which is significantly faster on CPU.
-// The model is loaded once into a OnceCell and reused across all 100 runs,
-// mirroring exactly how rust_only loads its model outside the loop.
-//
-// Model: BGE Small EN v1.5 — 384-dim, matches the LanceDB schema dim below.
-// ── Dans lib.rs ──────────────────────────────────────────────────────────────
-// 
-static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
-// static EMBED_MODEL: OnceCell<RwLock<TextEmbedding>> = OnceCell::new();
-
-fn get_embed_model() -> &'static Mutex<TextEmbedding> {
-    EMBED_MODEL.get_or_init(|| {
-        // let model = TextEmbedding::try_new(
-        //     InitOptions::new(EmbeddingModel::BGESmallENV15)
-        // ).expect("Failed to load fastembed model");
-        let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::BGESmallENV15Q) // Added 'Q' for Quantized
-        ).expect("Failed to load quantized model");
-        Mutex::new(model)
+fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
+    EMBEDDER.get_or_try_init(|| {
+        std::env::set_var("TOKENIZERS_PARALLELISM", "false");
+        let options = InitOptions::new(EmbeddingModel::BGESmallENV15)
+            .with_show_download_progress(false);
+        TextEmbedding::try_new(options)
+            .map(Mutex::new)
+            .map_err(|e| format!("Fastembed init failed: {e:?}"))
     })
 }
 
-// Use the thread_local block you already have at the top of your lib.rs
+#[pyfunction]
+fn load_embed_model() -> PyResult<()> {
+    get_embedder()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+    Ok(())
+}
+
 #[pyfunction]
 fn embed_texts_rust(py: Python<'_>, texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
 
-    let total = texts.len();
-    let (chunk_size, batch_size) = embed_config();
-
-    let chunked: Result<Vec<(usize, Vec<Vec<f32>>)>, String> = py.allow_threads(|| {
-        let pool = embed_pool();
-        pool.install(|| {
-            texts
-                .par_chunks(chunk_size)
-                .enumerate()
-                .map(|(idx, chunk)| {
-                    let mut chunk_refs: Vec<&str> = Vec::with_capacity(chunk.len());
-                    for s in chunk {
-                        chunk_refs.push(s.as_str());
-                    }
-
-                    MODEL.with(|model_cell| {
-                        let mut model = model_cell.borrow_mut();
-                        model
-                            .embed(chunk_refs, batch_size)
-                            .map(|embeds| (idx, embeds))
-                            .map_err(|e| format!("{:?}", e))
-                    })
-                })
-                .collect()
-        })
+    let embeddings = py.allow_threads(|| {
+        let embedder = get_embedder()?;
+        let guard = embedder
+            .lock()
+            .map_err(|_| "Embedder mutex poisoned".to_string())?;
+        guard
+            .embed(texts, Some(EMBED_BATCH_SIZE))
+            .map_err(|e| format!("Fastembed embed failed: {e:?}"))
     });
 
-    let mut chunked = chunked.map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)
-    })?;
-
-    // Preserve input order after parallel embedding
-    chunked.sort_by_key(|(idx, _)| *idx);
-    let mut all_embeddings = Vec::with_capacity(total);
-    for (_, mut embeds) in chunked {
-        all_embeddings.append(&mut embeds);
-    }
-
-    Ok(all_embeddings)
-}
-// static EMBED_MODEL: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
-// static EMBED_MODEL: OnceCell<Arc<TextEmbedding>> = OnceCell::new();
-// static EMBED_MODEL: OnceCell<Arc<RwLock<TextEmbedding>>> = OnceCell::new();
-
-
-/// Load the fastembed model eagerly. Call once at startup from Python
-/// (mirrors embedder::load_model() in rust_only).
-#[pyfunction]
-fn load_embed_model() -> PyResult<()> {
-    // This triggers the lazy initialization on the main thread
-    MODEL.with(|_| {}); 
-    Ok(())
-}
-
-// ── Cosine similarity ──────────────────────────────────────────────────────────
-fn cosine_similarity_inner(a: &[f32], b: &[f32]) -> Option<f32> {
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        norm_a += a[i] * a[i];
-        norm_b += b[i] * b[i];
-    }
-
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        None
-    } else {
-        Some(dot / denom)
-    }
-}
-
-#[pyfunction]
-fn cosine_similarity(a: Vec<f32>, b: Vec<f32>) -> PyResult<f32> {
-    if a.len() != b.len() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "Vectors must have the same length",
-        ));
-    }
-    cosine_similarity_inner(&a, &b).ok_or_else(|| {
-        PyErr::new::<pyo3::exceptions::PyValueError, _>("Zero-norm vector")
-    })
-}
-
-#[pyfunction]
-fn top_k_cosine(query: Vec<f32>, vectors: Vec<Vec<f32>>, k: usize) -> PyResult<Vec<(usize, f32)>> {
-    if k == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut scores = Vec::with_capacity(vectors.len());
-    for (idx, v) in vectors.iter().enumerate() {
-        if v.len() != query.len() {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "All vectors must have the same length as the query",
-            ));
-        }
-        if let Some(sim) = cosine_similarity_inner(&query, v) {
-            scores.push((idx, sim));
-        }
-    }
-
-    scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if scores.len() > k {
-        scores.truncate(k);
-    }
-    Ok(scores)
+    embeddings.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
 }
 
 #[pyfunction]
@@ -358,90 +106,11 @@ fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec
 }
 
 #[pyfunction]
-fn load_pdf_pages(path: String) -> PyResult<Vec<String>> {
-    extract_pages_from_path(&path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(e)
-    })
-}
-
-#[pyfunction]
-fn lancedb_create_or_open(
-    db_dir: String,
-    table_name: String,
-    texts: Vec<String>,
-    vectors: Vec<Vec<f32>>,
-    overwrite: bool,
-) -> PyResult<()> {
-    get_runtime()
-        .block_on(async {
-            let db = get_or_connect(&db_dir).await?;
-
-            let batches = build_batches(&texts, &vectors)?;
-            let mode = if overwrite {
-                CreateTableMode::Overwrite
-            } else {
-                CreateTableMode::exist_ok(|b| b)
-            };
-
-            db.create_table(&table_name, Box::new(batches))
-                .mode(mode)
-                .execute()
-                .await
-                .map_err(|e| format!("Table create failed: {:?}", e))?;
-
-            // Invalidate the table cache on every insert so the next search
-            // picks up the freshly written table (overwrite changes the snapshot).
-            if let Some(cache) = TABLE_CACHE.get() {
-                if let Ok(mut guard) = cache.lock() {
-                    guard.0 = String::new(); // poison the key
-                }
-            }
-
-            Ok::<(), String>(())
-        })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
-}
-
-#[pyfunction]
-fn lancedb_search(
-    db_dir: String,
-    table_name: String,
-    query_vector: Vec<f32>,
-    top_k: usize,
-) -> PyResult<Vec<(String, f32)>> {
-    get_runtime()
-        .block_on(async {
-            let db = get_or_connect(&db_dir).await?;
-
-            // Use cached table handle — no open_table on repeat calls
-            let table = get_or_open_table(&db, &db_dir, &table_name).await?;
-
-            let batches = table
-                .query()
-                .limit(top_k)
-                .nearest_to(query_vector)
-                .map_err(|e| format!("nearest_to failed: {:?}", e))?
-                .execute()
-                .await
-                .map_err(|e| format!("Query execute failed: {:?}", e))?
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|e| format!("Collect failed: {:?}", e))?;
-
-            parse_search_results(batches)
-        })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
-}
-
-#[pyfunction]
 fn load_pdf_pages_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     let mut results: Vec<(usize, Vec<String>)> = paths
         .par_iter()
         .enumerate()
-        .map(|(idx, path)| {
-            extract_pages_from_path(path)
-                .map(|pages| (idx, pages))
-        })
+        .map(|(idx, path)| extract_pages_from_path(path).map(|pages| (idx, pages)))
         .collect::<Result<Vec<_>, String>>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
 
@@ -486,6 +155,191 @@ fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
     Ok(pages_text)
 }
 
+fn extract_page_texts_with_numbers(path: &str) -> Result<Vec<(usize, String)>, String> {
+    let mut doc = PdfDocument::open(path)
+        .map_err(|e| format!("Could not open PDF: {:?}", e))?;
+
+    let mut pages_text = Vec::new();
+    let config = TextPipelineConfig::default();
+    let pipeline = TextPipeline::with_config(config);
+
+    let num_pages = doc.page_count()
+        .map_err(|e| format!("Could not get page count: {:?}", e))?;
+
+    for i in 0..num_pages {
+        if let Ok(spans) = doc.extract_spans(i) {
+            let context = ReadingOrderContext::default().with_page(i as u32);
+            if let Ok(ordered_spans) = pipeline.process(spans, context) {
+                let mut page_full_text = String::new();
+                for span in ordered_spans {
+                    page_full_text.push_str(&span.span.text);
+                    page_full_text.push(' ');
+                }
+                let trimmed = page_full_text.trim().to_string();
+                if !trimmed.is_empty() {
+                    pages_text.push((i as usize + 1, trimmed));
+                }
+            }
+        }
+    }
+
+    Ok(pages_text)
+}
+
+fn find_ascii_case_insensitive_positions(text: &str, needle: &str) -> Vec<usize> {
+    let hay = text.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    if needle_bytes.is_empty() || needle_bytes.len() > hay.len() {
+        return Vec::new();
+    }
+
+    let mut positions = Vec::new();
+    for (start, _) in text.char_indices() {
+        if start + needle_bytes.len() > hay.len() {
+            break;
+        }
+        let mut matched = true;
+        for (i, n) in needle_bytes.iter().enumerate() {
+            let b = hay[start + i];
+            if !b.is_ascii() || b.to_ascii_lowercase() != n.to_ascii_lowercase() {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            positions.push(start);
+        }
+    }
+    positions
+}
+
+fn extract_snippet(text: &str, center_byte: usize, radius_chars: usize) -> String {
+    let mut char_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    char_positions.push(text.len());
+
+    let center_char = match char_positions.binary_search(&center_byte) {
+        Ok(idx) => idx,
+        Err(idx) => idx.saturating_sub(1),
+    };
+
+    let start_char = center_char.saturating_sub(radius_chars);
+    let end_char = std::cmp::min(center_char + radius_chars, char_positions.len().saturating_sub(1));
+
+    let start_byte = char_positions[start_char];
+    let end_byte = char_positions[end_char];
+    text[start_byte..end_byte].trim().to_string()
+}
+
+#[pyfunction]
+fn extract_visual_elements(path: String, max_pages: Option<usize>) -> PyResult<Vec<(String, usize, String)>> {
+    let pages = extract_page_texts_with_numbers(&path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+
+    let mut results: Vec<(String, usize, String)> = Vec::new();
+    let mut seen: HashSet<(String, usize, String)> = HashSet::new();
+
+    let keywords = vec![
+        ("table", "table"),
+        ("figure", "figure"),
+        ("fig.", "figure"),
+        ("fig ", "figure"),
+        ("graph", "graph"),
+        ("chart", "graph"),
+        ("diagram", "figure"),
+    ];
+
+    for (page_num, text) in pages {
+        if let Some(limit) = max_pages {
+            if page_num > limit {
+                break;
+            }
+        }
+
+        for (needle, kind) in &keywords {
+            for pos in find_ascii_case_insensitive_positions(&text, needle) {
+                let center = pos + (needle.len() / 2);
+                let snippet = extract_snippet(&text, center, 120);
+                let item = (kind.to_string(), page_num, snippet);
+                if seen.insert(item.clone()) {
+                    results.push(item);
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+#[pyfunction]
+fn lancedb_create_or_open(
+    db_dir: String,
+    table_name: String,
+    texts: Vec<String>,
+    vectors: Vec<Vec<f32>>,
+    overwrite: bool,
+) -> PyResult<()> {
+    get_runtime()
+        .block_on(async {
+            let db = connect(&db_dir)
+                .execute()
+                .await
+                .map_err(|e| format!("DB connect failed: {:?}", e))?;
+
+            let batches = build_batches(&texts, &vectors)?;
+            let mode = if overwrite {
+                CreateTableMode::Overwrite
+            } else {
+                CreateTableMode::exist_ok(|b| b)
+            };
+
+            db.create_table(&table_name, Box::new(batches))
+                .mode(mode)
+                .execute()
+                .await
+                .map_err(|e| format!("Table create failed: {:?}", e))?;
+
+            Ok::<(), String>(())
+        })
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+}
+
+#[pyfunction]
+fn lancedb_search(
+    db_dir: String,
+    table_name: String,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> PyResult<Vec<(String, f32)>> {
+    get_runtime()
+        .block_on(async {
+            let db = connect(&db_dir)
+                .execute()
+                .await
+                .map_err(|e| format!("DB connect failed: {:?}", e))?;
+
+            let table = db
+                .open_table(&table_name)
+                .execute()
+                .await
+                .map_err(|e| format!("Open table failed: {:?}", e))?;
+
+            let batches = table
+                .query()
+                .limit(top_k)
+                .nearest_to(query_vector)
+                .map_err(|e| format!("nearest_to failed: {:?}", e))?
+                .execute()
+                .await
+                .map_err(|e| format!("Query execute failed: {:?}", e))?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| format!("Collect failed: {:?}", e))?;
+
+            parse_search_results(batches)
+        })
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+}
+
 fn build_batches(
     texts: &[String],
     vectors: &[Vec<f32>],
@@ -522,12 +376,19 @@ fn build_batches(
 
     let ids = Int32Array::from_iter_values(0..texts.len() as i32);
     let text_array = StringArray::from_iter_values(texts.iter().map(|s| s.as_str()));
-    let vector_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-        vectors.iter().map(|v| {
-            Some(v.iter().map(|x| Some(*x)).collect::<Vec<_>>())
-        }),
+    let mut flat = Vec::with_capacity(vectors.len() * dim);
+    for v in vectors.iter() {
+        flat.extend_from_slice(v);
+    }
+    let values = Float32Array::from(flat);
+    let value_field = Arc::new(Field::new("item", DataType::Float32, true));
+    let vector_array = FixedSizeListArray::try_new(
+        value_field,
         dim as i32,
-    );
+        Arc::new(values),
+        None,
+    )
+    .map_err(|e| format!("{:?}", e))?;
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -593,13 +454,10 @@ fn parse_search_results(batches: Vec<RecordBatch>) -> Result<Vec<(String, f32)>,
 fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
-    m.add_function(wrap_pyfunction!(cosine_similarity, m)?)?;
-    m.add_function(wrap_pyfunction!(top_k_cosine, m)?)?;
     m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
-    m.add_function(wrap_pyfunction!(load_pdf_pages, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_visual_elements, m)?)?;
     Ok(())
 }
-

@@ -13,7 +13,10 @@ __pycache__/
 .ipynb_checkpoints/
 .env
 .env.*
-
+test_embed.py
+test_extract.py
+*.onnx
+*.onnx.data
 # Build artifacts
 build/
 dist/
@@ -26,7 +29,7 @@ only_rust/
 lance_db/
 lancedb/
 pdfs/
-data/
+data/~
 *.pdf
 *.log
 *.db
@@ -38,12 +41,18 @@ data/
 .fastembed_cache
 profiling
 *.rar
+/pdfs_lock
+/data
+/safe
+.jpg
 
 # Rust
 rag_rust/target/
 **/target/
+smart_chunk.rs
 
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
+

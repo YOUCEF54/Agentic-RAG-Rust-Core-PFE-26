@@ -33,25 +33,6 @@
 
 import os
 import time
-
-# ---- Embedding performance config (BGE Small defaults) ----
-# These can be overridden from the shell before running:
-#   PowerShell example:
-#     $env:EMBED_THREADS=2
-#     $env:EMBED_CHUNK_SIZE=64
-#     $env:EMBED_BATCH_SIZE=64
-#     python test.py
-os.environ.setdefault("EMBED_THREADS", "4")
-os.environ.setdefault("EMBED_CHUNK_SIZE", "64")
-os.environ.setdefault("EMBED_BATCH_SIZE", "64")
-
-# Prevent thread oversubscription on i7-6700HQ
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-os.environ.setdefault("VECLIB_MAX_THREADS", "1")
-
 import rag_rust
 
 
@@ -61,15 +42,7 @@ rag_rust.load_embed_model()
 for _ in range(3):
     rag_rust.embed_texts_rust(["warmup"] * 64)
 
-print(
-    "Config:",
-    "EMBED_THREADS=", os.environ.get("EMBED_THREADS"),
-    "EMBED_CHUNK_SIZE=", os.environ.get("EMBED_CHUNK_SIZE"),
-    "EMBED_BATCH_SIZE=", os.environ.get("EMBED_BATCH_SIZE"),
-    "OMP_NUM_THREADS=", os.environ.get("OMP_NUM_THREADS"),
-)
 
-# The actual test
 num_texts = 256
 payload = (
     "ONNX Runtime already squeezes a lot of parallelism out of the CPU, so the fastest "
