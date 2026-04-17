@@ -66,8 +66,10 @@ CACHE_FILE = ".rag_cache.json"
 PDF_DIR = os.getenv("PDF_FOLDER", "pdfs")
 PDF_PATHS: list[str] = []
 MAX_PAGES = None
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 32
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 150
+EMBED_BATCH_SIZE = 4
+
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
@@ -76,8 +78,8 @@ QUESTION = (
     "does this paper propose to support knowledge management and decision-making?"
 )
 
-# ENV_PATH = Path(__file__).resolve().parent / ".env"
-# load_dotenv(dotenv_path=ENV_PATH)
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 
 def get_pdf_paths() -> list[Path]:
@@ -170,7 +172,8 @@ def chat_complete(messages: list[dict]) -> tuple[str, str | None]:
 def embed_texts(texts: list[str]) -> list[list[float]]:
     # BGE-small expects a passage prefix for indexed chunks
     prefixed = [f"passage: {t}" for t in texts]
-    return rag_rust.embed_texts_rust(prefixed)
+    # os.environ["EMBED_BATCH_SIZE"] = str(4)
+    return rag_rust.embed_texts_rust(prefixed, EMBED_BATCH_SIZE)
 
 
 def build_or_open_table(chunks: list[str], needs_rebuild: bool) -> None:
@@ -187,29 +190,127 @@ def build_or_open_table(chunks: list[str], needs_rebuild: bool) -> None:
     rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
 
 
-def load_pdf_texts() -> list[str]:
-    paths = get_pdf_paths()
-    if not paths:
-        raise FileNotFoundError("No PDFs found.")
-    try:
-        pages = rag_rust.load_pdf_pages_many([str(p) for p in paths])
-    except Exception as exc:
-        raise RuntimeError("Failed to load PDFs via Rust.") from exc
-    if MAX_PAGES is not None:
-        pages = pages[:MAX_PAGES]
-    return [t for t in pages if t and t.strip()]
 
+SKIP_LABELS = {"pageNumber", "footer", "header", "pageFooter", "pageHeader"}
 
-def chunk_texts(pages: Iterable[str]) -> list[str]:
+def chunk_markdown_page(md: str) -> list[str]:
+    """
+    Split one page's markdown into semantic chunks by heading boundaries.
+    Headings (# ## ###) become the title prepended to their following body.
+    """
     chunks: list[str] = []
-    for page_text in pages:
-        if page_text and page_text.strip():
-            chunks.extend(
-                c for c in rag_rust.smart_chunker(page_text, CHUNK_SIZE, CHUNK_OVERLAP) if c
-            )
+    current_title: str = ""
+    current_body: list[str] = []
+
+    for line in md.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("#"):
+            # flush previous section
+            if current_body:
+                body = " ".join(current_body).strip()
+                chunk = f"{current_title}\n{body}".strip() if current_title else body
+                if chunk:
+                    chunks.append(chunk)
+            current_title = stripped.lstrip("#").strip()
+            current_body = []
+        else:
+            current_body.append(stripped)
+
+    # flush last section
+    if current_body:
+        body = " ".join(current_body).strip()
+        chunk = f"{current_title}\n{body}".strip() if current_title else body
+        if chunk:
+            chunks.append(chunk)
+    elif current_title:
+        chunks.append(current_title)
+
     return chunks
 
 
+def load_and_chunk_markdown(paths: list[str]) -> list[str]:
+    """
+    Load PDFs via pdf_oxide to_markdown(), chunk by heading boundaries.
+    Replaces load_pdf_texts() + chunk_texts() entirely.
+    """
+    pages_md = rag_rust.load_pdf_pages_markdown(paths)
+    print(f"Loaded {len(pages_md)} pages as markdown")
+
+    all_chunks: list[str] = []
+    for md in pages_md:
+        if md and md.strip():
+            all_chunks.extend(chunk_markdown_page(md))
+
+    return [c for c in all_chunks if len(c.strip()) > 30]  # drop tiny fragments
+
+# def load_pdf_texts() -> list[str]:
+#     paths = get_pdf_paths()
+#     if not paths:
+#         raise FileNotFoundError("No PDFs found.")
+#     try:
+#         pages = rag_rust.load_pdf_pages_many([str(p) for p in paths])
+#     except Exception as exc:
+#         raise RuntimeError("Failed to load PDFs via Rust.") from exc
+#     if MAX_PAGES is not None:
+#         pages = pages[:MAX_PAGES]
+#     return [t for t in pages if t and t.strip()]
+
+
+# def chunk_texts(pages: Iterable[str]) -> list[str]:
+#     chunks: list[str] = []
+#     for page_text in pages:
+#         if page_text and page_text.strip():
+#             chunks.extend(
+#                 c for c in rag_rust.smart_chunker(page_text, CHUNK_SIZE, CHUNK_OVERLAP) if c
+#             )
+#     return chunks
+
+# def load_and_chunk_with_parl(pdf_paths: list[str]) -> list[str]:
+#     chunks = []
+
+#     for pdf_path in pdf_paths:
+#         # Single Rust call — no pymupdf needed
+#         pages = rag_rust.load_pdf_pages_with_images(pdf_path)
+#         # pages: [(image_bytes, raw_text), ...]
+
+#         for page_img_bytes, raw_text in pages:
+#             # PARL: detect layout elements from the page image
+#             detections = parl_model.detect(page_img_bytes)
+#             # detections: [{"label": "ParaText", "bbox": [x0,y0,x1,y1]}, ...]
+
+#             # Use pdf_oxide's positional text to align text → bbox
+#             text_blocks = rag_rust.get_text_in_bbox(raw_text, det["bbox"])
+
+#             buffer_title = None
+#             for det in detections:
+#                 label = det["label"]
+
+#                 # Skip noise elements
+#                 if label in ("PageNumber", "Footer", "Header", "PageFooter"):
+#                     continue
+
+#                 text = text_blocks[det["id"]].strip()
+#                 if not text:
+#                     continue
+
+#                 # Merge title with following paragraph
+#                 if label in ("DocTitle", "ParaTitle", "RegionTitle"):
+#                     buffer_title = text
+
+#                 elif label in ("ParaText", "Abstract", "ListText") and buffer_title:
+#                     chunks.append(f"{buffer_title}\n{text}")
+#                     buffer_title = None
+
+#                 else:
+#                     if buffer_title:
+#                         chunks.append(buffer_title)
+#                         buffer_title = None
+#                     chunks.append(f"[{label}] {text}")
+
+#     return chunks
 def retrieve(query: str, top_k: int = TOP_K):
     prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
     query_embedding = embed_texts([prefixed_query])[0]
@@ -282,7 +383,11 @@ if __name__ == "__main__":
         evaluator=Evaluator(chat_fn=chat_complete, min_score=0.75),
     )
     state = proxy.run(state)
-
+    print("=== Retriever Agent ===")
+    print("Retrieved chunks.   : ")
+    for i,e in enumerate(state["chunks"]):
+        print(f"{i} - {e}")
+    print("================")
     print(f"\nChatbot response:\n{state['answer']}")
     print(f"Score: {state['score']} | Attempts: {state['attempts']}")
     print(f"score: {state['score']}| retry: {state['should_retry']}")

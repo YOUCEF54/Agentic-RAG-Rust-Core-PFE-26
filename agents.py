@@ -68,6 +68,7 @@ class Retriever(Agent):
             "Retrieved chunks.",
             {"query_used": query, "top_k": self.top_k, "count": len(state["chunks"])},
         )
+       
         return state
 
 
@@ -81,10 +82,14 @@ class Generator(Agent):
     def run(self, state: dict) -> dict:
         context = "\n".join(f" - {text}" for text, _ in state["chunks"])
         instruction_prompt = (
-            "You are a helpful chatbot.\n"
-            "Use only the following pieces of context to answer the question. "
-            "Don't make up any new information:\n"
-            f"{context}\n"
+            "You are a precise research assistant. Your goal is to answer questions using ONLY the provided context.\n\n"
+            "STRICT RULES:\n"
+            "1. Use only the provided 'Retrieved Context' to answer.\n"
+            "2. If the context does not contain the answer, or if you are asked for specific examples/metrics not present in the text, "
+            "explicitly state: 'The provided document does not contain information regarding [X].'\n"
+            "3. DO NOT use outside knowledge or fabricate industry case studies, statistics, or technical names.\n"
+            "4. Keep your answer grounded and factual.\n\n"
+            f"Retrieved Context:\n{context}\n"
         )
         query = state.get("refined_query") or state["query"]
         messages = [
@@ -106,7 +111,7 @@ class Generator(Agent):
     
 
 class Evaluator(Agent):
-    def __init__(self, chat_fn, min_score: float = 0.7, max_attempts: int = 3):
+    def __init__(self, chat_fn, min_score: float = 0.7, max_attempts: int = 2):
         super().__init__("Evaluator")
         self.chat_fn = chat_fn
         # On augmente le seuil d'exigence à 0.7 (70% de qualité minimum)
@@ -120,18 +125,31 @@ class Evaluator(Agent):
         context = "\n".join(f" - {text}" for text, _ in chunks)
         
         # Prompt "LLM-as-a-Judge" (short, shareable summary only)
+        # eval_prompt = (
+        #     "You are a strict grading agent for a RAG system.\n"
+        #     "Evaluate the quality of the 'Generated Answer' based on the 'User Query' and the 'Retrieved Context'.\n\n"
+        #     "Criteria:\n"
+        #     "- Faithfulness: Is the answer derived strictly from the context without hallucinations?\n"
+        #     "- Relevance: Does the answer directly address the user's query?\n\n"
+        #     f"User Query: {query}\n"
+        #     f"Retrieved Context:\n{context}\n"
+        #     f"Generated Answer:\n{answer}\n\n"
+        #     "INSTRUCTIONS:\n"
+        #     "1. First, write 'SUMMARY: ' followed by a single short sentence.\n"
+        #     "2. Then, on a new line, write 'SCORE: ' followed by a float between 0.0 and 1.0.\n"
+        # )
         eval_prompt = (
-            "You are a strict grading agent for a RAG system.\n"
-            "Evaluate the quality of the 'Generated Answer' based on the 'User Query' and the 'Retrieved Context'.\n\n"
-            "Criteria:\n"
-            "- Faithfulness: Is the answer derived strictly from the context without hallucinations?\n"
-            "- Relevance: Does the answer directly address the user's query?\n\n"
+            "You are a strict Auditor for an AI system. Compare the 'Generated Answer' against the 'Retrieved Context'.\n\n"
+            "Evaluation Tasks:\n"
+            "1. FAITHFULNESS: Identify any claim in the answer NOT found in the context. If the answer mentions "
+            "specific metrics (%), case studies, or names (e.g., 'stagedFlow') not in the context, it is a hallucination.\n"
+            "2. RELEVANCE: Does it answer the user's question?\n\n"
             f"User Query: {query}\n"
             f"Retrieved Context:\n{context}\n"
             f"Generated Answer:\n{answer}\n\n"
-            "INSTRUCTIONS:\n"
-            "1. First, write 'SUMMARY: ' followed by a single short sentence.\n"
-            "2. Then, on a new line, write 'SCORE: ' followed by a float between 0.0 and 1.0.\n"
+            "OUTPUT FORMAT:\n"
+            "SUMMARY: [Briefly explain if the answer is grounded or contains outside info]\n"
+            "SCORE: [A float between 0.0 and 1.0. Score 0.0 if any part is fabricated.]\n"
         )
         
         messages = [{"role": "user", "content": eval_prompt}]
@@ -195,6 +213,7 @@ class QueryRefiner(Agent):
             "Keep the original intent, do not answer the query, and return only the rewritten query.\n\n"
             f"User query: {state['query']}"
         )
+        
         messages = [{"role": "user", "content": prompt}]
         refined_query, model_used = self.chat_fn(messages)
         state["refined_query"] = refined_query.strip()

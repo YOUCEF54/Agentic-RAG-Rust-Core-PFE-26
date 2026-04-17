@@ -1,0 +1,4516 @@
+{
+  "image_id": "page_011_img_000",
+  "filename": "page_011_img_000.png",
+  "filepath": "extracted_images_with_context\\images\\page_011_img_000.png",
+  "relative_path": "images/page_011_img_000.png",
+  "page_number": 11,
+  "image_index": 0,
+  "width": 4753,
+  "height": 8192,
+  "format": "png",
+  "image_type": "table",
+  "page_full_text": "document exploration, improving token efficiency and retrieval\nrelevance.\n• Control Flow: (i) Retrieve → (ii) draft partial answer →\n(iii) reflect on document utility → (iv) refine query →\nrepeat until stop [5].\n• Strengths: Improves factuality and citation accuracy by\nestablishing a “retrieval-on-demand” critique signal rather\nthan blindly passing context [6].\n• Limitations: Relies heavily on the LLM’s inherent self-\ncritique capabilities, which can suffer from evaluation\nblind spots or over-confidence.\n• Typical Use Cases: Long-form attributed generation\nand open-domain QA where initial retrieval is typically\nimperfect [78].\n• Failure Modes: Infinite loops where the agent repeatedly\nrefines a query but retrieves the same unhelpful docu-\nments.\n• Cost/Latency Implications: Introduces sequential itera-\ntions that compound latency and increase compute over-\nhead, motivating budget-aware gating mechanisms [7],\n[8].\n\nC. Decomposition-Based Retrieval Pattern\nRather than producing a full plan upfront, the agent decom-\nposes the query implicitly through stepwise reasoning, trigger-\ning retrieval mid-trajectory based on evolving hypotheses [9],\n[12]. Emerging approaches such as DLLM-Searcher [79] ex-\nplore diffusion-based language models to parallelize reasoning\ntrajectories, reducing latency while maintaining diverse search\nexploration.\n• Control Flow: (i) Generate reasoning step → (ii) for-\nmulate retrieval action → (iii) incorporate observation →\nrepeat [9].\n• Strengths: Highly adaptable; allows the system to dis-\ncover the next information need based on partial infer-\nence, mimicking human investigative behavior [12].\n• Limitations: The repeated interleaving of reasoning and\nFig. 6. Control-flow map demonstrating how Agentic RAG systems compose tool calls creates highly redundant prompt prefixes [80].\ndesign patterns through explicit decisions over task decomposition, retrieval\n• Typical Use Cases: Complex investigative tasks where\ntiming, iterative refinement, and orchestration. This structural mapping high-\nsubsequent logical steps are entirely dependent on the\nlights the transition from linear pipelines to cyclic loops.\nspecific facts uncovered in the previous step [3].\n• Failure Modes: Reasoning drift, where the agent forgets\n• Failure Modes: Hallucinating an unsolvable sub-question the original objective after a long sequence of intermedi-\nor failing to dynamically adjust the plan when newly ate observations.\nretrieved evidence contradicts the initial premise. • Cost/Latency Implications: Extremely expensive com-\n• Cost/Latency Implications: High upfront token cost putationally due to repeated prompt accumulation and\nfor planning, but retrievals can often be parallelized to sequential bottlenecking [80].\noptimize wall-clock latency.\nD. Tool-Augmented Retrieval Loop Pattern\nB. Retrieve-Reflect-Refine Pattern\nRetrieval is treated as just one tool among many (e.g.,\ncalculators, code execution, SQL). The agent dynamically\nThe agent alternates retrieval and generation with explicit\nchooses among these heterogeneous tools in an iterative loop\nreflection steps to decide if retrieved evidence is sufficient,\nto update its state [10].\nand refines subsequent actions (e.g., query rewriting, retrieval\ngating) accordingly [6]. Recent work such as A-RAG [18] • Control Flow: (i) Decide next tool → (ii) execute tool\nintroduces hierarchical retrieval interfaces that allow agents → (iii) process observation → (iv) update state → repeat\n[15].\nto progressively refine context acquisition through staged",
+  "page_markdown": "Fig. 6. Control-flowdesign patternstiming, iterative refinement, and orchestration. This structural mapping high-lights the transition from linear pipelines to cyclic loops.\n\n- Failure         or failingretrieved evidence\n- Cost/Latency         for planning,optimize wall-clock\n\nB. Retrieve-Reflect-Refine\n\nThe agentreflection stepsand refinesgating) accordinglyintroduces hierarchicalto progressively\n\ndocument exploration, improving token efficiency and retrievalrelevance.\n- Control         (iii) reflectrepeat until\n- Strengths:         establishing a “retrieval-on-demand” critique signal ratherthan blindly\n- Limitations:         critique capabilities,blind spots\n- Typical         and open-domainimperfect [78].\n- Failure         refines aments.\n- Cost/Latency         tions thathead, motivating[8].\n\nC. Decomposition-Based\n\nRather than producing a full plan upfront, the agent decom-poses the query implicitly through stepwise reasoning, trigger-ing retrieval mid-trajectory[12]. Emergingplore diffusion-based language models to parallelize reasoningtrajectories, reducing latency while maintaining diverse searchexploration.\n- Control         mulate retrieval action → (iii) incorporate observation →repeat [9].\n- Strengths:         cover theence, mimicking\n- Limitations: map demonstrating how Agentic RAG systems composetool calls through explicit decisions over task decomposition, retrieval• Typical         subsequent logicalspecific facts\n- Failure Modes: Hallucinating an unsolvable sub-questionthe original to dynamically adjust the plan when newlyate observations. contradicts the initial premise.• Cost/Latency Implications: High upfront token costputationally due but retrievals can often be parallelized tosequential bottlenecking latency.                    D. Tool-Augmented PatternRetrieval iscalculators, code alternates retrieval and generation with explicit                    chooses among to decide if retrieved evidence is sufficient,                    to update subsequent actions (e.g., query rewriting, retrieval [6]. Recent work such as A-RAG [18]• Control retrieval interfaces that allow agents→ (iii) process observation → (iv) update state → repeat[15]. refine context acquisition through staged\n\nFlow: (i) Retrieve → (ii) draft partial answer →            on document utility → (iv) refine query → stop [5]. Improves factuality and citation accuracy by\n\npassing context [6]. Relies heavily on the LLM’s inherent self- which can suffer from evaluation or over-confidence. Use Cases: Long-form attributed generation QA where initial retrieval is typically\n\nModes: Infinite loops where the agent repeatedly      query but retrieves the same unhelpful docu-\n\nImplications: Introduces sequential itera- compound latency and increase compute over- budget-aware gating mechanisms [7],\n\nRetrieval Pattern\n\nbased on evolving hypotheses [9], approaches such as DLLM-Searcher [79] ex-\n\nFlow: (i) Generate reasoning step → (ii) for-\n\nHighly adaptable; allows the system to dis- next information need based on partial infer- human investigative behavior [12]. The repeated interleaving of reasoning and creates highly redundant prompt prefixes [80]. Use Cases: Complex investigative tasks where steps are entirely dependent on the uncovered in the previous step [3]. Modes: Reasoning drift, where the agent forgets objective after a long sequence of intermedi-\n\nImplications: Extremely expensive com- to repeated prompt accumulation and [80].\n\nRetrieval Loop Pattern\n\ntreated as just one tool among many (e.g., execution, SQL). The agent dynamically these heterogeneous tools in an iterative loop its state [10]. Flow: (i) Decide next tool → (ii) execute tool\n",
+  "context_chunks": {
+    "full": "document exploration, improving token efficiency and retrieval\nrelevance.\n• Control Flow: (i) Retrieve → (ii) draft partial answer →\n(iii) reflect on document utility → (iv) refine query →\nrepeat until stop [5].\n• Strengths: Improves factuality and citation accuracy by\nestablishing a “retrieval-on-demand” critique signal rather\nthan blindly passing context [6].\n• Limitations: Relies heavily on the LLM’s inherent self-\ncritique capabilities, which can suffer from evaluation\nblind spots or over-confidence.\n• Typical Use Cases: Long-form attributed generation\nand open-domain QA where initial retrieval is typically\nimperfect [78].\n• Failure Modes: Infinite loops where the agent repeatedly\nrefines a query but retrieves the same unhelpful docu-\nments.\n• Cost/Latency Implications: Introduces sequential itera-\ntions that compound latency and increase compute over-\nhead, motivating budget-aware gating mechanisms [7],\n[8].\n\nC. Decomposition-Based Retrieval Pattern\nRather than producing a full plan upfront, the agent decom-\nposes the query implicitly through stepwise reasoning, trigger-\ning retrieval mid-trajectory based on evolving hypotheses [9],\n[12]. Emerging approaches such as DLLM-Searcher [79] ex-\nplore diffusion-based language models to parallelize reasoning\ntrajectories, reducing latency while maintaining diverse search\nexploration.\n• Control Flow: (i) Generate reasoning step → (ii) for-\nmulate retrieval action → (iii) incorporate observation →\nrepeat [9].\n• Strengths: Highly adaptable; allows the system to dis-\ncover the next information need based on partial infer-\nence, mimicking human investigative behavior [12].\n• Limitations: The repeated interleaving of reasoning and\nFig. 6. Control-flow map demonstrating how Agentic RAG systems compose tool calls creates highly redundant prompt prefixes [80].\ndesign patterns through explicit decisions over task decomposition, retrieval\n• Typical Use Cases: Complex investigative tasks where\ntiming, iterative refinement, and orchestration. This structural mapping high-\nsubsequent logical steps are entirely dependent on the\nlights the transition from linear pipelines to cyclic loops.\nspecific facts uncovered in the previous step [3].\n• Failure Modes: Reasoning drift, where the agent forgets\n• Failure Modes: Hallucinating an unsolvable sub-question the original objective after a long sequence of intermedi-\nor failing to dynamically adjust the plan when newly ate observations.\nretrieved evidence contradicts the initial premise. • Cost/Latency Implications: Extremely expensive com-\n• Cost/Latency Implications: High upfront token cost putationally due to repeated prompt accumulation and\nfor planning, but retrievals can often be parallelized to sequential bottlenecking [80].\noptimize wall-clock latency.\nD. Tool-Augmented Retrieval Loop Pattern\nB. Retrieve-Reflect-Refine Pattern\nRetrieval is treated as just one tool among many (e.g.,\ncalculators, code execution, SQL). The agent dynamically\nThe agent alternates retrieval and generation with explicit\nchooses among these heterogeneous tools in an iterative loop\nreflection steps to decide if retrieved evidence is sufficient,\nto update its state [10].\nand refines subsequent actions (e.g., query rewriting, retrieval\ngating) accordingly [6]. Recent work such as A-RAG [18] • Control Flow: (i) Decide next tool → (ii) execute tool\nintroduces hierarchical retrieval interfaces that allow agents → (iii) process observation → (iv) update state → repeat\n[15].\nto progressively refine context acquisition through staged",
+    "preview": "document exploration, improving token efficiency and retrieval\nrelevance.\n• Control Flow: (i) Retrieve → (ii) draft partial answer →\n(iii) reflect on document utility → (iv) refine query →\nrepeat until stop [5].\n• Strengths: Improves factuality and citation accuracy by\nestablishing a “retrieval-on-demand” critique signal rather\nthan blindly passing context [6].\n• Limitations: Relies heavily on the LLM’s inherent self-\ncritique capabilities, which can suffer from evaluation\nblind spots or over-co...",
+    "estimated_position_line": 33
+  },
+  "page_words": [
+    {
+      "text": "•",
+      "bbox": [
+        59.82600021362305,
+        231.26197814941406,
+        4.174007415771484,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Failure",
+      "bbox": [
+        68.17401123046875,
+        231.26197814941406,
+        29.218040466308594,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "or",
+      "bbox": [
+        68.88899993896484,
+        219.30697631835938,
+        7.3603668212890625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "failing",
+      "bbox": [
+        79.92955017089844,
+        219.30697631835938,
+        25.76129150390625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        114.14575958251953,
+        219.30697631835938,
+        6.82769775390625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "dynamically",
+      "bbox": [
+        130.42630004882812,
+        219.30697631835938,
+        47.43360900878906,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "adjust",
+      "bbox": [
+        186.74655151367188,
+        219.30697631835938,
+        22.535400390625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        218.0888671875,
+        219.30697631835938,
+        10.99871826171875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "retrieved",
+      "bbox": [
+        68.88899993896484,
+        207.3519744873047,
+        36.453147888183594,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "evidence",
+      "bbox": [
+        109.39250183105469,
+        207.3519744873047,
+        32.40281677246094,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "contradicts",
+      "bbox": [
+        148.88368225097656,
+        207.3519744873047,
+        42.355987548828125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        198.392822265625,
+        207.3519744873047,
+        10.99871826171875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "initial",
+      "bbox": [
+        216.09637451171875,
+        207.3519744873047,
+        22.525421142578125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        59.82600021362305,
+        195.39598083496094,
+        4.501461029052734,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Cost/Latency",
+      "bbox": [
+        68.82892608642578,
+        195.39598083496094,
+        54.01757049560547,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Implications:",
+      "bbox": [
+        132.03842163085938,
+        195.39598083496094,
+        54.73808288574219,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "High",
+      "bbox": [
+        197.97447204589844,
+        195.39598083496094,
+        17.93267822265625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "for",
+      "bbox": [
+        68.88899993896484,
+        183.44097900390625,
+        11.876953125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "planning,",
+      "bbox": [
+        84.72493743896484,
+        183.44097900390625,
+        35.63085174560547,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "but",
+      "bbox": [
+        128.5550079345703,
+        183.44097900390625,
+        11.417144775390625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "retrievals",
+      "bbox": [
+        147.7529296875,
+        183.44097900390625,
+        35.96498107910156,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "can",
+      "bbox": [
+        191.69296264648438,
+        183.44097900390625,
+        12.239059448242188,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "often",
+      "bbox": [
+        212.15283203125,
+        183.44097900390625,
+        19.136489868164062,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "optimize",
+      "bbox": [
+        68.88899993896484,
+        171.48597717285156,
+        33.43658447265625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "wall-clock",
+      "bbox": [
+        106.50515747070312,
+        171.48597717285156,
+        41.79571533203125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "latency.",
+      "bbox": [
+        155.43853759765625,
+        171.48597717285156,
+        30.002914428710938,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "B.",
+      "bbox": [
+        48.9640007019043,
+        151.1189727783203,
+        7.9156646728515625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Retrieve-Reflect-Refine",
+      "bbox": [
+        60.837501525878906,
+        151.1189727783203,
+        91.03018951416016,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Pattern",
+      "bbox": [
+        160.74685668945312,
+        151.1189727783203,
+        28.331146240234375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "The",
+      "bbox": [
+        58.927001953125,
+        135.3309783935547,
+        13.187164306640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "agent",
+      "bbox": [
+        76.50988006591797,
+        135.3309783935547,
+        21.978599548339844,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "alternates",
+      "bbox": [
+        106.36980438232422,
+        135.3309783935547,
+        36.970298767089844,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        151.08303833007812,
+        135.3309783935547,
+        32.117431640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        191.10577392578125,
+        135.3309783935547,
+        12.657470703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "reflection",
+      "bbox": [
+        48.9640007019043,
+        123.3759765625,
+        37.52786636352539,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "steps",
+      "bbox": [
+        90.24465942382812,
+        123.3759765625,
+        18.76392364501953,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        117.11482238769531,
+        123.3759765625,
+        6.82769775390625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "decide",
+      "bbox": [
+        132.70533752441406,
+        123.3759765625,
+        24.422592163085938,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "if",
+      "bbox": [
+        164.67958068847656,
+        123.3759765625,
+        5.7185211181640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "retrieved",
+      "bbox": [
+        178.8802490234375,
+        123.3759765625,
+        34.107940673828125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        48.9640007019043,
+        111.42097473144531,
+        11.846439361572266,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "refines",
+      "bbox": [
+        64.7592544555664,
+        111.42097473144531,
+        27.641693115234375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "subsequent",
+      "bbox": [
+        99.9797592163086,
+        111.42097473144531,
+        42.51313018798828,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "actions",
+      "bbox": [
+        149.64976501464844,
+        111.42097473144531,
+        26.875350952148438,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "(e.g.,",
+      "bbox": [
+        183.09332275390625,
+        111.42097473144531,
+        19.44415283203125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "query",
+      "bbox": [
+        210.0609130859375,
+        111.42097473144531,
+        20.979583740234375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "gating)",
+      "bbox": [
+        48.9640007019043,
+        99.46597290039062,
+        28.625690460205078,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "accordingly",
+      "bbox": [
+        81.6790771484375,
+        99.46597290039062,
+        44.98323059082031,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "[6].",
+      "bbox": [
+        134.9033660888672,
+        99.46597290039062,
+        13.278152465820312,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Recent",
+      "bbox": [
+        157.42111206054688,
+        99.46597290039062,
+        25.848678588867188,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "work",
+      "bbox": [
+        192.78407287597656,
+        99.46597290039062,
+        18.37103271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "such",
+      "bbox": [
+        220.13739013671875,
+        99.46597290039062,
+        16.601669311523438,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "introduces",
+      "bbox": [
+        48.9640007019043,
+        87.51097106933594,
+        39.57316207885742,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "hierarchical",
+      "bbox": [
+        92.49449157714844,
+        87.51097106933594,
+        47.48780822753906,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        148.372802734375,
+        87.51097106933594,
+        32.117431640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "interfaces",
+      "bbox": [
+        188.56082153320312,
+        87.51097106933594,
+        37.46842956542969,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        48.9640007019043,
+        75.55496978759766,
+        7.9900054931640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "progressively",
+      "bbox": [
+        60.94900894165039,
+        75.55496978759766,
+        51.93503952026367,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "refine",
+      "bbox": [
+        122.40829467773438,
+        75.55496978759766,
+        21.578994750976562,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "context",
+      "bbox": [
+        154.3010711669922,
+        75.55496978759766,
+        27.842971801757812,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "acquisition",
+      "bbox": [
+        192.18218994140625,
+        75.55496978759766,
+        42.3651123046875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Fig.",
+      "bbox": [
+        48.9640007019043,
+        290.9020080566406,
+        13.219207763671875,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "6.",
+      "bbox": [
+        65.48800659179688,
+        290.9020080566406,
+        6.609611511230469,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "Control-flow",
+      "bbox": [
+        75.40242004394531,
+        290.9020080566406,
+        39.657615661621094,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "design",
+      "bbox": [
+        48.9640007019043,
+        281.93499755859375,
+        19.214313507080078,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "patterns",
+      "bbox": [
+        71.38070678710938,
+        281.93499755859375,
+        25.61908721923828,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "through",
+      "bbox": [
+        103.46453857421875,
+        281.93499755859375,
+        23.439071655273438,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "explicit",
+      "bbox": [
+        133.1991424560547,
+        281.93499755859375,
+        25.497604370117188,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "decisions",
+      "bbox": [
+        161.8839569091797,
+        281.93499755859375,
+        28.684799194335938,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "over",
+      "bbox": [
+        197.07156372070312,
+        281.93499755859375,
+        13.545974731445312,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "task",
+      "bbox": [
+        214.0040283203125,
+        281.93499755859375,
+        13.545974731445312,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "[8].",
+      "bbox": [
+        331.9029846191406,
+        493.830810546875,
+        14.1070556640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "C.",
+      "bbox": [
+        311.9779968261719,
+        473.83380126953125,
+        9.0560302734375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Decomposition-Based",
+      "bbox": [
+        325.56201171875,
+        473.83380126953125,
+        86.03204345703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Retrieval",
+      "bbox": [
+        420.4767150878906,
+        473.83380126953125,
+        35.1121826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Pattern",
+      "bbox": [
+        462.9736633300781,
+        473.83380126953125,
+        28.331146240234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Rather",
+      "bbox": [
+        321.94000244140625,
+        458.19781494140625,
+        26.502899169921875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "than",
+      "bbox": [
+        352.86004638671875,
+        458.19781494140625,
+        17.6685791015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "producing",
+      "bbox": [
+        374.94580078125,
+        458.19781494140625,
+        39.754302978515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "a",
+      "bbox": [
+        419.1172790527344,
+        458.19781494140625,
+        4.417144775390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "full",
+      "bbox": [
+        427.9515686035156,
+        458.19781494140625,
+        17.6685791015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "plan",
+      "bbox": [
+        450.03729248046875,
+        458.19781494140625,
+        17.668609619140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "upfront,",
+      "bbox": [
+        472.123046875,
+        458.19781494140625,
+        35.337188720703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        511.87738037109375,
+        458.19781494140625,
+        13.25146484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "agent",
+      "bbox": [
+        529.5460205078125,
+        458.19781494140625,
+        22.08575439453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "decom-",
+      "bbox": [
+        556.0488891601562,
+        458.19781494140625,
+        26.5029296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "poses",
+      "bbox": [
+        311.9779968261719,
+        446.2428283691406,
+        21.108062744140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        337.30767822265625,
+        446.2428283691406,
+        12.66485595703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "query",
+      "bbox": [
+        354.19415283203125,
+        446.2428283691406,
+        21.108062744140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "implicitly",
+      "bbox": [
+        379.5238342285156,
+        446.2428283691406,
+        42.216156005859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "through",
+      "bbox": [
+        425.9615783691406,
+        446.2428283691406,
+        29.551300048828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "stepwise",
+      "bbox": [
+        459.7344970703125,
+        446.2428283691406,
+        33.772918701171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "reasoning,",
+      "bbox": [
+        497.7290344238281,
+        446.2428283691406,
+        42.216156005859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "trigger-",
+      "bbox": [
+        544.1668090820312,
+        446.2428283691406,
+        33.77288818359375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "ing",
+      "bbox": [
+        311.9779968261719,
+        434.287841796875,
+        11.863311767578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        327.7957763671875,
+        434.287841796875,
+        35.5899658203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "mid-trajectory",
+      "bbox": [
+        367.3401794433594,
+        434.287841796875,
+        55.3621826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "based",
+      "bbox": [
+        430.2158203125,
+        434.287841796875,
+        20.979583740234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "on",
+      "bbox": [
+        458.6640319824219,
+        434.287841796875,
+        8.302154541015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "evolving",
+      "bbox": [
+        474.64337158203125,
+        434.287841796875,
+        34.797393798828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "hypotheses",
+      "bbox": [
+        513.7904052734375,
+        434.287841796875,
+        43.49676513671875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[9],",
+      "bbox": [
+        563.8744506835938,
+        434.287841796875,
+        13.2781982421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[12].",
+      "bbox": [
+        311.9779968261719,
+        422.3328552246094,
+        21.73980712890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Emerging",
+      "bbox": [
+        338.0657958984375,
+        422.3328552246094,
+        34.78369140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "approaches",
+      "bbox": [
+        380.6764831542969,
+        422.3328552246094,
+        43.002197265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "such",
+      "bbox": [
+        431.5252380371094,
+        422.3328552246094,
+        16.6016845703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "as",
+      "bbox": [
+        455.42950439453125,
+        422.3328552246094,
+        7.193023681640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "DLLM-Searcher",
+      "bbox": [
+        471.24871826171875,
+        422.3328552246094,
+        63.9613037109375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[79]",
+      "bbox": [
+        542.7338256835938,
+        422.3328552246094,
+        15.27069091796875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "ex-",
+      "bbox": [
+        565.5038452148438,
+        422.3328552246094,
+        11.40966796875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "plore",
+      "bbox": [
+        311.9779968261719,
+        410.3768615722656,
+        21.23480224609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "diffusion-based",
+      "bbox": [
+        337.45977783203125,
+        410.3768615722656,
+        63.70440673828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "language",
+      "bbox": [
+        405.4111633300781,
+        410.3768615722656,
+        33.975677490234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "models",
+      "bbox": [
+        443.63385009765625,
+        410.3768615722656,
+        25.48175048828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        473.3625793457031,
+        410.3768615722656,
+        8.493927001953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "parallelize",
+      "bbox": [
+        486.10345458984375,
+        410.3768615722656,
+        46.71661376953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "reasoning",
+      "bbox": [
+        537.0670166015625,
+        410.3768615722656,
+        38.22265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "trajectories,",
+      "bbox": [
+        311.9779968261719,
+        398.421875,
+        54.295074462890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "reducing",
+      "bbox": [
+        370.4496154785156,
+        398.421875,
+        33.412353515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "latency",
+      "bbox": [
+        408.03851318359375,
+        398.421875,
+        29.235809326171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "while",
+      "bbox": [
+        441.45086669921875,
+        398.421875,
+        20.882720947265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "maintaining",
+      "bbox": [
+        466.5101318359375,
+        398.421875,
+        45.9420166015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "diverse",
+      "bbox": [
+        516.628662109375,
+        398.421875,
+        29.23583984375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "search",
+      "bbox": [
+        550.041015625,
+        398.421875,
+        25.0592041015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "exploration.",
+      "bbox": [
+        311.9779968261719,
+        386.4668884277344,
+        47.87030029296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        374.3569030761719,
+        4.41973876953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Control",
+      "bbox": [
+        331.67950439453125,
+        374.3569030761719,
+        30.938232421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Flow:",
+      "bbox": [
+        371.8929443359375,
+        374.3569030761719,
+        22.366058349609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(i)",
+      "bbox": [
+        402.1144714355469,
+        374.3569030761719,
+        8.9215087890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Generate",
+      "bbox": [
+        419.8606262207031,
+        374.3569030761719,
+        34.173919677734375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "reasoning",
+      "bbox": [
+        462.71002197265625,
+        374.3569030761719,
+        37.10272216796875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "step",
+      "bbox": [
+        508.06378173828125,
+        374.3569030761719,
+        14.83233642578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        533.6756591796875,
+        374.3569030761719,
+        6.22662353515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(ii)",
+      "bbox": [
+        547.38818359375,
+        374.3569030761719,
+        11.73199462890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "for-",
+      "bbox": [
+        567.1580200195312,
+        374.3569030761719,
+        13.939697265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "mulate",
+      "bbox": [
+        331.9029846191406,
+        362.40191650390625,
+        25.85662841796875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        362.0690612792969,
+        362.40191650390625,
+        38.784942626953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "action",
+      "bbox": [
+        405.1634521484375,
+        362.40191650390625,
+        25.85662841796875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        435.3294982910156,
+        362.40191650390625,
+        4.3094482421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(iii)",
+      "bbox": [
+        443.9483642578125,
+        362.40191650390625,
+        21.547210693359375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "incorporate",
+      "bbox": [
+        469.80499267578125,
+        362.40191650390625,
+        47.40386962890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "observation",
+      "bbox": [
+        521.5182495117188,
+        362.40191650390625,
+        47.40386962890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        573.2315063476562,
+        362.40191650390625,
+        4.3094482421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "repeat",
+      "bbox": [
+        331.9029846191406,
+        350.4469299316406,
+        22.32891845703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[9].",
+      "bbox": [
+        357.953369140625,
+        350.4469299316406,
+        14.885955810546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        338.4909362792969,
+        4.2371826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Strengths:",
+      "bbox": [
+        331.3143615722656,
+        338.4909362792969,
+        42.371856689453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Highly",
+      "bbox": [
+        382.7977294921875,
+        338.4909362792969,
+        25.85723876953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "adaptable;",
+      "bbox": [
+        416.9076232910156,
+        338.4909362792969,
+        39.488128662109375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "allows",
+      "bbox": [
+        464.7615051269531,
+        338.4909362792969,
+        24.43115234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        496.9136657714844,
+        338.4909362792969,
+        10.99871826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "system",
+      "bbox": [
+        516.5257568359375,
+        338.4909362792969,
+        25.85723876953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        550.1007080078125,
+        338.4909362792969,
+        6.82769775390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "dis-",
+      "bbox": [
+        564.709228515625,
+        338.4909362792969,
+        13.9476318359375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "cover",
+      "bbox": [
+        331.9029846191406,
+        326.53594970703125,
+        20.273895263671875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        356.23162841796875,
+        326.53594970703125,
+        12.164337158203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "next",
+      "bbox": [
+        376.609130859375,
+        326.53594970703125,
+        15.717010498046875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "information",
+      "bbox": [
+        400.5784912109375,
+        326.53594970703125,
+        45.406219482421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "need",
+      "bbox": [
+        454.52862548828125,
+        326.53594970703125,
+        17.0400390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "based",
+      "bbox": [
+        480.0484924316406,
+        326.53594970703125,
+        20.979583740234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "on",
+      "bbox": [
+        509.453125,
+        326.53594970703125,
+        8.30224609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "partial",
+      "bbox": [
+        525.5323486328125,
+        326.53594970703125,
+        24.45196533203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "infer-",
+      "bbox": [
+        557.7750244140625,
+        326.53594970703125,
+        21.100830078125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "ence,",
+      "bbox": [
+        331.9029846191406,
+        314.5809631347656,
+        22.13690185546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "mimicking",
+      "bbox": [
+        358.4672546386719,
+        314.5809631347656,
+        39.846435546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "human",
+      "bbox": [
+        406.73541259765625,
+        314.5809631347656,
+        24.674041748046875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "investigative",
+      "bbox": [
+        438.9507141113281,
+        314.5809631347656,
+        52.706512451171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "behavior",
+      "bbox": [
+        495.7115783691406,
+        314.5809631347656,
+        32.434783935546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[12].",
+      "bbox": [
+        535.0304565429688,
+        314.5809631347656,
+        17.98248291015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        302.6259765625,
+        4.225372314453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Limitations:",
+      "bbox": [
+        331.29071044921875,
+        302.6259765625,
+        50.704315185546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "The",
+      "bbox": [
+        391.4719543457031,
+        302.6259765625,
+        13.48687744140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "repeated",
+      "bbox": [
+        412.4020080566406,
+        302.6259765625,
+        32.207977294921875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "interleaving",
+      "bbox": [
+        451.8796081542969,
+        302.6259765625,
+        46.22955322265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "of",
+      "bbox": [
+        504.923583984375,
+        302.6259765625,
+        7.1929931640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "reasoning",
+      "bbox": [
+        519.65625,
+        302.6259765625,
+        37.102783203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        564.3953247070312,
+        302.6259765625,
+        12.657470703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "map",
+      "bbox": [
+        123.44538879394531,
+        290.9020080566406,
+        11.766250610351562,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "demonstrating",
+      "bbox": [
+        139.13372802734375,
+        290.9020080566406,
+        50.98712158203125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "how",
+      "bbox": [
+        194.04293823242188,
+        290.9020080566406,
+        11.766250610351562,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "Agentic",
+      "bbox": [
+        209.73126220703125,
+        290.9020080566406,
+        27.454620361328125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "RAG",
+      "bbox": [
+        241.1079559326172,
+        290.9020080566406,
+        11.766265869140625,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "systems",
+      "bbox": [
+        256.7962951660156,
+        290.9020080566406,
+        27.45458984375,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "compose",
+      "bbox": [
+        288.1729736328125,
+        290.9020080566406,
+        27.454620361328125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "tool",
+      "bbox": [
+        331.9029846191406,
+        290.6709899902344,
+        14.501556396484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "calls",
+      "bbox": [
+        350.0299377441406,
+        290.6709899902344,
+        18.126953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "creates",
+      "bbox": [
+        375.41217041015625,
+        290.6709899902344,
+        26.37847900390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "highly",
+      "bbox": [
+        409.2711486816406,
+        290.6709899902344,
+        23.96148681640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "redundant",
+      "bbox": [
+        440.9526672363281,
+        290.6709899902344,
+        38.097991943359375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "prompt",
+      "bbox": [
+        487.00506591796875,
+        290.6709899902344,
+        26.80511474609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "prefixes",
+      "bbox": [
+        521.0784301757812,
+        290.6709899902344,
+        30.2508544921875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[80].",
+      "bbox": [
+        558.2633056640625,
+        290.6709899902344,
+        17.98248291015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "decomposition,",
+      "bbox": [
+        234.06103515625,
+        281.93499755859375,
+        47.526275634765625,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        287.5505065917969,
+        281.93499755859375,
+        25.694000244140625,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        278.71600341796875,
+        4.2979736328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Typical",
+      "bbox": [
+        331.43597412109375,
+        278.71600341796875,
+        30.08587646484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Use",
+      "bbox": [
+        370.2615661621094,
+        278.71600341796875,
+        13.48687744140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Cases:",
+      "bbox": [
+        392.63934326171875,
+        278.71600341796875,
+        25.84869384765625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Complex",
+      "bbox": [
+        427.958740234375,
+        278.71600341796875,
+        34.14556884765625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "investigative",
+      "bbox": [
+        469.9840087890625,
+        278.71600341796875,
+        49.59454345703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "tasks",
+      "bbox": [
+        526.532470703125,
+        278.71600341796875,
+        18.67987060546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "where",
+      "bbox": [
+        553.8980712890625,
+        278.71600341796875,
+        22.35772705078125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "timing,",
+      "bbox": [
+        48.9640007019043,
+        272.968994140625,
+        23.71176528930664,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "iterative",
+      "bbox": [
+        76.06315612792969,
+        272.968994140625,
+        30.48656463623047,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "refinement,",
+      "bbox": [
+        109.93710327148438,
+        272.968994140625,
+        37.2613525390625,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        150.58584594726562,
+        272.968994140625,
+        10.162185668945312,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "orchestration.",
+      "bbox": [
+        164.1354217529297,
+        272.968994140625,
+        47.42353820800781,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "This",
+      "bbox": [
+        214.94635009765625,
+        272.968994140625,
+        13.549575805664062,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "structural",
+      "bbox": [
+        231.88333129882812,
+        272.968994140625,
+        33.873931884765625,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "mapping",
+      "bbox": [
+        269.1446533203125,
+        272.968994140625,
+        23.711761474609375,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "high-",
+      "bbox": [
+        296.24383544921875,
+        272.968994140625,
+        16.93695068359375,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "subsequent",
+      "bbox": [
+        331.9029846191406,
+        266.760009765625,
+        41.0458984375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "logical",
+      "bbox": [
+        377.0534973144531,
+        266.760009765625,
+        28.732147216796875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "steps",
+      "bbox": [
+        414.393310546875,
+        266.760009765625,
+        18.67987060546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "are",
+      "bbox": [
+        441.61865234375,
+        266.760009765625,
+        10.991241455078125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "entirely",
+      "bbox": [
+        461.14007568359375,
+        266.760009765625,
+        29.267913818359375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "dependent",
+      "bbox": [
+        499.63336181640625,
+        266.760009765625,
+        39.09326171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "on",
+      "bbox": [
+        547.7493896484375,
+        266.760009765625,
+        8.30218505859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        564.5994873046875,
+        266.760009765625,
+        10.99871826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "lights",
+      "bbox": [
+        48.9640007019043,
+        264.0019836425781,
+        19.983440399169922,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        72.27800750732422,
+        264.0019836425781,
+        9.991714477539062,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "transition",
+      "bbox": [
+        85.60029602050781,
+        264.0019836425781,
+        33.30573272705078,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "from",
+      "bbox": [
+        122.23658752441406,
+        264.0019836425781,
+        13.322296142578125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "linear",
+      "bbox": [
+        138.8894500732422,
+        264.0019836425781,
+        19.983428955078125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "pipelines",
+      "bbox": [
+        162.20346069335938,
+        264.0019836425781,
+        29.975143432617188,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        195.50918579101562,
+        264.0019836425781,
+        6.6611480712890625,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "cyclic",
+      "bbox": [
+        205.5009002685547,
+        264.0019836425781,
+        19.983428955078125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "loops.",
+      "bbox": [
+        228.81491088867188,
+        264.0019836425781,
+        19.983428955078125,
+        7.9700927734375
+      ]
+    },
+    {
+      "text": "specific",
+      "bbox": [
+        331.9029846191406,
+        254.8050079345703,
+        29.56329345703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "facts",
+      "bbox": [
+        365.1617126464844,
+        254.8050079345703,
+        18.477081298828125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "uncovered",
+      "bbox": [
+        391.424560546875,
+        254.8050079345703,
+        39.586395263671875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "in",
+      "bbox": [
+        437.61279296875,
+        254.8050079345703,
+        6.827728271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        451.5936584472656,
+        254.8050079345703,
+        10.99871826171875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "previous",
+      "bbox": [
+        470.1683654785156,
+        254.8050079345703,
+        32.7127685546875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "step",
+      "bbox": [
+        509.82708740234375,
+        254.8050079345703,
+        14.83233642578125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "[3].",
+      "bbox": [
+        531.4658203125,
+        254.8050079345703,
+        13.2781982421875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        242.85000610351562,
+        4.17401123046875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Failure",
+      "bbox": [
+        331.1880187988281,
+        242.85000610351562,
+        29.218048095703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Modes:",
+      "bbox": [
+        369.82073974609375,
+        242.85000610351562,
+        29.170501708984375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Reasoning",
+      "bbox": [
+        406.6943359375,
+        242.85000610351562,
+        40.09747314453125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "drift,",
+      "bbox": [
+        453.03265380859375,
+        242.85000610351562,
+        18.9744873046875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "where",
+      "bbox": [
+        479.5671081542969,
+        242.85000610351562,
+        22.35772705078125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        508.66949462890625,
+        242.85000610351562,
+        10.99871826171875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "agent",
+      "bbox": [
+        526.7582397460938,
+        242.85000610351562,
+        20.05804443359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "forgets",
+      "bbox": [
+        553.6742553710938,
+        242.85000610351562,
+        26.38720703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Modes:",
+      "bbox": [
+        106.33474731445312,
+        231.26197814941406,
+        26.338623046875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Hallucinating",
+      "bbox": [
+        137.06314086914062,
+        231.26197814941406,
+        57.0670166015625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "an",
+      "bbox": [
+        198.51992797851562,
+        231.26197814941406,
+        8.779541015625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "unsolvable",
+      "bbox": [
+        211.68923950195312,
+        231.26197814941406,
+        43.897705078125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "sub-question",
+      "bbox": [
+        259.9767150878906,
+        231.26197814941406,
+        52.67724609375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        331.9029846191406,
+        230.89500427246094,
+        11.414642333984375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "original",
+      "bbox": [
+        347.1225280761719,
+        230.89500427246094,
+        30.439056396484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "objective",
+      "bbox": [
+        384.60638427734375,
+        230.89500427246094,
+        35.159271240234375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "after",
+      "bbox": [
+        423.6722717285156,
+        230.89500427246094,
+        19.532928466796875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "a",
+      "bbox": [
+        449.8004455566406,
+        230.89500427246094,
+        3.45703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "long",
+      "bbox": [
+        460.4465026855469,
+        230.89500427246094,
+        16.163330078125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "sequence",
+      "bbox": [
+        484.081787109375,
+        230.89500427246094,
+        34.66986083984375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "of",
+      "bbox": [
+        525.486328125,
+        230.89500427246094,
+        7.1929931640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "intermedi-",
+      "bbox": [
+        539.8270263671875,
+        230.89500427246094,
+        39.995361328125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "plan",
+      "bbox": [
+        238.15753173828125,
+        219.30697631835938,
+        15.716995239257812,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "when",
+      "bbox": [
+        263.82916259765625,
+        219.30697631835938,
+        19.255706787109375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "newly",
+      "bbox": [
+        292.6888122558594,
+        219.30697631835938,
+        22.366058349609375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "ate",
+      "bbox": [
+        331.9029846191406,
+        218.94000244140625,
+        11.816253662109375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "observations.",
+      "bbox": [
+        347.657958984375,
+        218.94000244140625,
+        51.20367431640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "premise.",
+      "bbox": [
+        246.16680908203125,
+        207.3519744873047,
+        32.46478271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        206.9840087890625,
+        4.50146484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Cost/Latency",
+      "bbox": [
+        331.8429260253906,
+        206.9840087890625,
+        54.017578125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Implications:",
+      "bbox": [
+        395.05242919921875,
+        206.9840087890625,
+        54.73809814453125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Extremely",
+      "bbox": [
+        458.70306396484375,
+        206.9840087890625,
+        39.595367431640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "expensive",
+      "bbox": [
+        506.6759948730469,
+        206.9840087890625,
+        38.097991943359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "com-",
+      "bbox": [
+        552.9732666015625,
+        206.9840087890625,
+        18.37103271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "upfront",
+      "bbox": [
+        225.93202209472656,
+        195.39598083496094,
+        27.842971801757812,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "token",
+      "bbox": [
+        263.9169006347656,
+        195.39598083496094,
+        20.522979736328125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "cost",
+      "bbox": [
+        294.0956115722656,
+        195.39598083496094,
+        14.83233642578125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "putationally",
+      "bbox": [
+        331.9029846191406,
+        195.0290069580078,
+        48.358489990234375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "due",
+      "bbox": [
+        384.29132080078125,
+        195.0290069580078,
+        12.089630126953125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        404.925537109375,
+        195.0290069580078,
+        6.827728271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "repeated",
+      "bbox": [
+        420.91998291015625,
+        195.0290069580078,
+        32.207977294921875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "prompt",
+      "bbox": [
+        462.7262268066406,
+        195.0290069580078,
+        26.805084228515625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "accumulation",
+      "bbox": [
+        498.9827575683594,
+        195.0290069580078,
+        51.848419189453125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        560.1910400390625,
+        195.0290069580078,
+        12.657470703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "be",
+      "bbox": [
+        239.6379852294922,
+        183.44097900390625,
+        7.9302215576171875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "parallelized",
+      "bbox": [
+        255.7283477783203,
+        183.44097900390625,
+        45.19953918457031,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        308.72528076171875,
+        183.44097900390625,
+        6.827728271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "sequential",
+      "bbox": [
+        331.9029846191406,
+        183.07400512695312,
+        40.46893310546875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "bottlenecking",
+      "bbox": [
+        376.4187927246094,
+        183.07400512695312,
+        52.609619140625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "[80].",
+      "bbox": [
+        436.1117858886719,
+        183.07400512695312,
+        17.982513427734375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "D.",
+      "bbox": [
+        311.9779968261719,
+        163.07701110839844,
+        9.24530029296875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Tool-Augmented",
+      "bbox": [
+        325.845947265625,
+        163.07701110839844,
+        64.717041015625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Retrieval",
+      "bbox": [
+        398.3298645019531,
+        163.07701110839844,
+        35.1121826171875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Loop",
+      "bbox": [
+        441.374267578125,
+        163.07701110839844,
+        18.378997802734375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Pattern",
+      "bbox": [
+        467.2874755859375,
+        163.07701110839844,
+        28.331146240234375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Retrieval",
+      "bbox": [
+        321.94000244140625,
+        147.44100952148438,
+        33.870361328125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "is",
+      "bbox": [
+        359.57373046875,
+        147.44100952148438,
+        7.526763916015625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "treated",
+      "bbox": [
+        376.28973388671875,
+        147.44100952148438,
+        25.8990478515625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "as",
+      "bbox": [
+        411.2846374511719,
+        147.44100952148438,
+        7.193023681640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "just",
+      "bbox": [
+        427.3443603515625,
+        147.44100952148438,
+        13.509307861328125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "one",
+      "bbox": [
+        450.56219482421875,
+        147.44100952148438,
+        12.65753173828125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "tool",
+      "bbox": [
+        472.3175354003906,
+        147.44100952148438,
+        14.39398193359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "among",
+      "bbox": [
+        497.1357116699219,
+        147.44100952148438,
+        24.674041748046875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "many",
+      "bbox": [
+        532.2246704101562,
+        147.44100952148438,
+        19.7020263671875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "(e.g.,",
+      "bbox": [
+        560.517333984375,
+        147.44100952148438,
+        19.44415283203125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "calculators,",
+      "bbox": [
+        311.9779968261719,
+        135.4860076904297,
+        47.257904052734375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "code",
+      "bbox": [
+        363.1740417480469,
+        135.4860076904297,
+        15.752655029296875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "execution,",
+      "bbox": [
+        388.6891174316406,
+        135.4860076904297,
+        39.741729736328125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "SQL).",
+      "bbox": [
+        438.43994140625,
+        135.4860076904297,
+        22.5985107421875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "The",
+      "bbox": [
+        471.32232666015625,
+        135.4860076904297,
+        13.48687744140625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "agent",
+      "bbox": [
+        494.59912109375,
+        135.4860076904297,
+        20.05804443359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "dynamically",
+      "bbox": [
+        524.757568359375,
+        135.4860076904297,
+        47.43359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "generation",
+      "bbox": [
+        211.9869384765625,
+        135.3309783935547,
+        40.493438720703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "with",
+      "bbox": [
+        260.70550537109375,
+        135.3309783935547,
+        16.163330078125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "explicit",
+      "bbox": [
+        284.6407470703125,
+        135.3309783935547,
+        28.780853271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "chooses",
+      "bbox": [
+        311.9779968261719,
+        123.531005859375,
+        32.92718505859375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "among",
+      "bbox": [
+        349.6090393066406,
+        123.531005859375,
+        23.5194091796875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "these",
+      "bbox": [
+        380.4426574707031,
+        123.531005859375,
+        19.136505126953125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "heterogeneous",
+      "bbox": [
+        407.354248046875,
+        123.531005859375,
+        55.7464599609375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "tools",
+      "bbox": [
+        470.2322692871094,
+        123.531005859375,
+        18.2232666015625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "in",
+      "bbox": [
+        495.3562927246094,
+        123.531005859375,
+        6.827728271484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "an",
+      "bbox": [
+        509.6260986328125,
+        123.531005859375,
+        7.93017578125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "iterative",
+      "bbox": [
+        524.5570068359375,
+        123.531005859375,
+        31.62432861328125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "loop",
+      "bbox": [
+        563.3106079101562,
+        123.531005859375,
+        16.163330078125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "evidence",
+      "bbox": [
+        221.48297119140625,
+        123.3759765625,
+        33.686859130859375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "is",
+      "bbox": [
+        262.65838623046875,
+        123.3759765625,
+        6.090484619140625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "sufficient,",
+      "bbox": [
+        276.9464416503906,
+        123.3759765625,
+        38.556915283203125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        311.9779968261719,
+        111.57600402832031,
+        8.17822265625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "update",
+      "bbox": [
+        324.24530029296875,
+        111.57600402832031,
+        24.53460693359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "its",
+      "bbox": [
+        355.24310302734375,
+        111.57600402832031,
+        8.928985595703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "state",
+      "bbox": [
+        371.11767578125,
+        111.57600402832031,
+        17.293426513671875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "[10].",
+      "bbox": [
+        395.4945068359375,
+        111.57600402832031,
+        17.982513427734375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "rewriting,",
+      "bbox": [
+        238.14109802246094,
+        111.42097473144531,
+        37.73109436035156,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        282.50927734375,
+        111.42097473144531,
+        32.117431640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "as",
+      "bbox": [
+        245.257080078125,
+        99.46597290039062,
+        7.1929931640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "A-RAG",
+      "bbox": [
+        263.04364013671875,
+        99.46597290039062,
+        28.3602294921875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "[18]",
+      "bbox": [
+        299.7545166015625,
+        99.46597290039062,
+        15.27069091796875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        99.46500396728516,
+        4.41973876953125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Control",
+      "bbox": [
+        331.67950439453125,
+        99.46500396728516,
+        30.938232421875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Flow:",
+      "bbox": [
+        371.8929443359375,
+        99.46500396728516,
+        22.366058349609375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "(i)",
+      "bbox": [
+        401.4170837402344,
+        99.46500396728516,
+        8.9215087890625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "Decide",
+      "bbox": [
+        418.6900939941406,
+        99.46500396728516,
+        26.318359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "next",
+      "bbox": [
+        452.8928527832031,
+        99.46500396728516,
+        15.717010498046875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "tool",
+      "bbox": [
+        476.0240173339844,
+        99.46500396728516,
+        14.39398193359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        500.5997619628906,
+        99.46500396728516,
+        6.22662353515625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "(ii)",
+      "bbox": [
+        513.7244873046875,
+        99.46500396728516,
+        11.73199462890625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "execute",
+      "bbox": [
+        533.5261840820312,
+        99.46500396728516,
+        28.8018798828125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "tool",
+      "bbox": [
+        569.5928344726562,
+        99.46500396728516,
+        14.39398193359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "that",
+      "bbox": [
+        234.23843383789062,
+        87.51097106933594,
+        13.9476318359375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "allow",
+      "bbox": [
+        257.10260009765625,
+        87.51097106933594,
+        20.52294921875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "agents",
+      "bbox": [
+        286.1905517578125,
+        87.51097106933594,
+        23.95294189453125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        331.9029846191406,
+        87.51000213623047,
+        4.474273681640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "(iii)",
+      "bbox": [
+        340.8515319824219,
+        87.51000213623047,
+        22.371368408203125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "process",
+      "bbox": [
+        367.6971740722656,
+        87.51000213623047,
+        31.319915771484375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "observation",
+      "bbox": [
+        403.4913635253906,
+        87.51000213623047,
+        49.217041015625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        457.18267822265625,
+        87.51000213623047,
+        4.474273681640625,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "(iv)",
+      "bbox": [
+        466.1312255859375,
+        87.51000213623047,
+        17.897064208984375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "update",
+      "bbox": [
+        488.5025634765625,
+        87.51000213623047,
+        26.845703125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "state",
+      "bbox": [
+        519.822509765625,
+        87.51000213623047,
+        22.37139892578125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        546.6681518554688,
+        87.51000213623047,
+        4.47430419921875,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "repeat",
+      "bbox": [
+        555.61669921875,
+        87.51000213623047,
+        26.84564208984375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "[15].",
+      "bbox": [
+        331.9029846191406,
+        75.55500030517578,
+        19.08831787109375,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "through",
+      "bbox": [
+        245.05909729003906,
+        75.55496978759766,
+        29.298751831054688,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "staged",
+      "bbox": [
+        284.68621826171875,
+        75.55496978759766,
+        23.95294189453125,
+        9.962600708007812
+      ]
+    },
+    {
+      "text": "document",
+      "bbox": [
+        311.9779968261719,
+        733.0899658203125,
+        34.07208251953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "exploration,",
+      "bbox": [
+        350.3091125488281,
+        733.0899658203125,
+        51.108154296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "improving",
+      "bbox": [
+        405.67626953125,
+        733.0899658203125,
+        38.33111572265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "token",
+      "bbox": [
+        448.26641845703125,
+        733.0899658203125,
+        21.295074462890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "efficiency",
+      "bbox": [
+        473.82049560546875,
+        733.0899658203125,
+        42.59014892578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        520.669677734375,
+        733.0899658203125,
+        12.77703857421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        537.7056884765625,
+        733.0899658203125,
+        38.3311767578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "relevance.",
+      "bbox": [
+        311.9779968261719,
+        721.1339721679688,
+        40.657379150390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        709.0239868164062,
+        4.41973876953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Control",
+      "bbox": [
+        331.67950439453125,
+        709.0239868164062,
+        30.938232421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Flow:",
+      "bbox": [
+        371.86041259765625,
+        709.0239868164062,
+        22.203399658203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(i)",
+      "bbox": [
+        398.5044860839844,
+        709.0239868164062,
+        13.322021484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Retrieve",
+      "bbox": [
+        416.2671813964844,
+        709.0239868164062,
+        35.525421142578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        456.2332763671875,
+        709.0239868164062,
+        4.440673828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(ii)",
+      "bbox": [
+        465.1146545410156,
+        709.0239868164062,
+        17.7626953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "draft",
+      "bbox": [
+        487.31805419921875,
+        709.0239868164062,
+        22.203369140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "partial",
+      "bbox": [
+        513.9620971679688,
+        709.0239868164062,
+        31.08477783203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "answer",
+      "bbox": [
+        549.487548828125,
+        709.0239868164062,
+        26.64404296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        580.572265625,
+        709.0239868164062,
+        4.440673828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(iii)",
+      "bbox": [
+        331.9029846191406,
+        697.0689697265625,
+        16.28118896484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "reflect",
+      "bbox": [
+        351.4404296875,
+        697.0689697265625,
+        22.79364013671875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "on",
+      "bbox": [
+        382.6990051269531,
+        697.0689697265625,
+        8.302154541015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "document",
+      "bbox": [
+        399.94757080078125,
+        697.0689697265625,
+        37.14056396484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "utility",
+      "bbox": [
+        444.68963623046875,
+        697.0689697265625,
+        23.01361083984375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        478.2436828613281,
+        697.0689697265625,
+        6.22662353515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "(iv)",
+      "bbox": [
+        492.14947509765625,
+        697.0689697265625,
+        13.501312255859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "refine",
+      "bbox": [
+        513.3120727539062,
+        697.0689697265625,
+        21.5789794921875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "query",
+      "bbox": [
+        543.4007568359375,
+        697.0689697265625,
+        20.97955322265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "→",
+      "bbox": [
+        574.9107666015625,
+        697.0689697265625,
+        6.22662353515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "repeat",
+      "bbox": [
+        331.9029846191406,
+        685.1139526367188,
+        22.55035400390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "until",
+      "bbox": [
+        358.2117004394531,
+        685.1139526367188,
+        18.791961669921875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "stop",
+      "bbox": [
+        384.3102722167969,
+        685.1139526367188,
+        15.278656005859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[5].",
+      "bbox": [
+        406.3953857421875,
+        685.1139526367188,
+        13.278167724609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        673.158935546875,
+        4.2371826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Strengths:",
+      "bbox": [
+        331.3143615722656,
+        673.158935546875,
+        42.371856689453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Improves",
+      "bbox": [
+        382.9458923339844,
+        673.158935546875,
+        35.661712646484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "factuality",
+      "bbox": [
+        425.7417297363281,
+        673.158935546875,
+        36.472198486328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        470.1092529296875,
+        673.158935546875,
+        12.657470703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "citation",
+      "bbox": [
+        490.1501159667969,
+        673.158935546875,
+        28.780853271484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "accuracy",
+      "bbox": [
+        526.9265747070312,
+        673.158935546875,
+        33.677978515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "by",
+      "bbox": [
+        568.382080078125,
+        673.158935546875,
+        8.30218505859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "establishing",
+      "bbox": [
+        331.9029846191406,
+        661.2039184570312,
+        49.056549072265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "a",
+      "bbox": [
+        385.0475769042969,
+        661.2039184570312,
+        4.088043212890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "“retrieval-on-demand”",
+      "bbox": [
+        393.2236633300781,
+        661.2039184570312,
+        85.84893798828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "critique",
+      "bbox": [
+        483.16064453125,
+        661.2039184570312,
+        32.70440673828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "signal",
+      "bbox": [
+        519.9530639648438,
+        661.2039184570312,
+        24.5283203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "rather",
+      "bbox": [
+        548.5693969726562,
+        661.2039184570312,
+        24.52825927734375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "than",
+      "bbox": [
+        331.9029846191406,
+        649.2479248046875,
+        15.9600830078125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "blindly",
+      "bbox": [
+        351.85308837890625,
+        649.2479248046875,
+        27.93017578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "passing",
+      "bbox": [
+        387.3174743652344,
+        649.2479248046875,
+        28.331146240234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "context",
+      "bbox": [
+        423.11309814453125,
+        649.2479248046875,
+        27.842987060546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[6].",
+      "bbox": [
+        457.61309814453125,
+        649.2479248046875,
+        13.278167724609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        637.2929077148438,
+        4.225372314453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Limitations:",
+      "bbox": [
+        331.29071044921875,
+        637.2929077148438,
+        50.704315185546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Relies",
+      "bbox": [
+        390.89019775390625,
+        637.2929077148438,
+        23.4832763671875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "heavily",
+      "bbox": [
+        421.8280029296875,
+        637.2929077148438,
+        27.842987060546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "on",
+      "bbox": [
+        457.09979248046875,
+        637.2929077148438,
+        8.302154541015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        472.5451354980469,
+        637.2929077148438,
+        10.99871826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "LLM’s",
+      "bbox": [
+        491.6162109375,
+        637.2929077148438,
+        22.92730712890625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "inherent",
+      "bbox": [
+        519.1289672851562,
+        637.2929077148438,
+        36.68365478515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "self-",
+      "bbox": [
+        562.6552734375,
+        637.2929077148438,
+        16.8284912109375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "critique",
+      "bbox": [
+        331.9029846191406,
+        625.337890625,
+        29.380615234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "capabilities,",
+      "bbox": [
+        364.9561767578125,
+        625.337890625,
+        47.743499755859375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "which",
+      "bbox": [
+        422.3833312988281,
+        625.337890625,
+        22.366058349609375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "can",
+      "bbox": [
+        454.0494689941406,
+        625.337890625,
+        12.23907470703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "suffer",
+      "bbox": [
+        475.1837158203125,
+        625.337890625,
+        22.048675537109375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "from",
+      "bbox": [
+        506.5653381347656,
+        625.337890625,
+        17.486358642578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "evaluation",
+      "bbox": [
+        533.2716064453125,
+        625.337890625,
+        39.995361328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "blind",
+      "bbox": [
+        331.9029846191406,
+        613.3828735351562,
+        19.75311279296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "spots",
+      "bbox": [
+        355.6067199707031,
+        613.3828735351562,
+        19.75311279296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "or",
+      "bbox": [
+        382.4432373046875,
+        613.3828735351562,
+        7.193023681640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "over-confidence.",
+      "bbox": [
+        397.1914367675781,
+        613.3828735351562,
+        65.09213256835938,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        601.4278564453125,
+        4.2979736328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Typical",
+      "bbox": [
+        331.43597412109375,
+        601.4278564453125,
+        30.08587646484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Use",
+      "bbox": [
+        370.2615661621094,
+        601.4278564453125,
+        13.48687744140625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Cases:",
+      "bbox": [
+        395.05029296875,
+        601.4278564453125,
+        25.84869384765625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Long-form",
+      "bbox": [
+        432.52337646484375,
+        601.4278564453125,
+        41.58587646484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "attributed",
+      "bbox": [
+        484.0935974121094,
+        601.4278564453125,
+        36.979400634765625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "generation",
+      "bbox": [
+        531.199462890625,
+        601.4278564453125,
+        40.493408203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        331.9029846191406,
+        589.4728393554688,
+        13.889862060546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "open-domain",
+      "bbox": [
+        350.42279052734375,
+        589.4728393554688,
+        50.929473876953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "QA",
+      "bbox": [
+        410.9728088378906,
+        589.4728393554688,
+        11.2510986328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "where",
+      "bbox": [
+        430.700439453125,
+        589.4728393554688,
+        22.35772705078125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "initial",
+      "bbox": [
+        460.2710876464844,
+        589.4728393554688,
+        22.52545166015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "retrieval",
+      "bbox": [
+        490.3601379394531,
+        589.4728393554688,
+        32.117462158203125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "is",
+      "bbox": [
+        529.0296020507812,
+        589.4728393554688,
+        6.09051513671875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "typically",
+      "bbox": [
+        542.85107421875,
+        589.4728393554688,
+        33.623779296875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "imperfect",
+      "bbox": [
+        331.9029846191406,
+        577.516845703125,
+        35.8533935546875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "[78].",
+      "bbox": [
+        371.7401123046875,
+        577.516845703125,
+        19.918548583984375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        565.5618286132812,
+        4.17401123046875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Failure",
+      "bbox": [
+        331.1880187988281,
+        565.5618286132812,
+        29.218048095703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Modes:",
+      "bbox": [
+        369.3526916503906,
+        565.5618286132812,
+        26.362274169921875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Infinite",
+      "bbox": [
+        400.1086730957031,
+        565.5618286132812,
+        35.149688720703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "loops",
+      "bbox": [
+        439.652099609375,
+        565.5618286132812,
+        21.968536376953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "where",
+      "bbox": [
+        466.01434326171875,
+        565.5618286132812,
+        21.96856689453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        492.3766174316406,
+        565.5618286132812,
+        13.18115234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "agent",
+      "bbox": [
+        509.95147705078125,
+        565.5618286132812,
+        21.96856689453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "repeatedly",
+      "bbox": [
+        536.313720703125,
+        565.5618286132812,
+        43.93719482421875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "refines",
+      "bbox": [
+        331.9029846191406,
+        553.6068115234375,
+        26.035614013671875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "a",
+      "bbox": [
+        361.6579895019531,
+        553.6068115234375,
+        3.7193603515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "query",
+      "bbox": [
+        374.2656555175781,
+        553.6068115234375,
+        20.979583740234375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "but",
+      "bbox": [
+        403.7333984375,
+        553.6068115234375,
+        11.417144775390625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "retrieves",
+      "bbox": [
+        423.3228759765625,
+        553.6068115234375,
+        33.112701416015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "the",
+      "bbox": [
+        464.39569091796875,
+        553.6068115234375,
+        10.99871826171875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "same",
+      "bbox": [
+        484.66961669921875,
+        553.6068115234375,
+        18.37103271484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "unhelpful",
+      "bbox": [
+        511.8007507324219,
+        553.6068115234375,
+        36.609588623046875,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "docu-",
+      "bbox": [
+        557.2886962890625,
+        553.6068115234375,
+        20.97955322265625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "ments.",
+      "bbox": [
+        331.9029846191406,
+        541.6517944335938,
+        26.29132080078125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "•",
+      "bbox": [
+        322.8399963378906,
+        529.69677734375,
+        4.50146484375,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Cost/Latency",
+      "bbox": [
+        331.8429260253906,
+        529.69677734375,
+        54.017578125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Implications:",
+      "bbox": [
+        395.05242919921875,
+        529.69677734375,
+        54.73809814453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "Introduces",
+      "bbox": [
+        457.7352600097656,
+        529.69677734375,
+        40.493438720703125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "sequential",
+      "bbox": [
+        505.7441101074219,
+        529.69677734375,
+        38.990020751953125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "itera-",
+      "bbox": [
+        551.7192993164062,
+        529.69677734375,
+        20.15289306640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "tions",
+      "bbox": [
+        331.9029846191406,
+        517.7407836914062,
+        18.405914306640625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "that",
+      "bbox": [
+        353.9900817871094,
+        517.7407836914062,
+        14.7247314453125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "compound",
+      "bbox": [
+        377.1321105957031,
+        517.7407836914062,
+        39.602447509765625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "latency",
+      "bbox": [
+        424.109375,
+        517.7407836914062,
+        27.35479736328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "and",
+      "bbox": [
+        459.0008544921875,
+        517.7407836914062,
+        12.65753173828125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "increase",
+      "bbox": [
+        479.0284729003906,
+        517.7407836914062,
+        31.225006103515625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "compute",
+      "bbox": [
+        518.3206787109375,
+        517.7407836914062,
+        32.20166015625,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "over-",
+      "bbox": [
+        557.907958984375,
+        517.7407836914062,
+        19.59307861328125,
+        9.96258544921875
+      ]
+    },
+    {
+      "text": "head,",
+      "bbox": [
+        331.9029846191406,
+        505.7857971191406,
+        20.927703857421875,
+        9.962615966796875
+      ]
+    },
+    {
+      "text": "motivating",
+      "bbox": [
+        357.0162353515625,
+        505.7857971191406,
+        41.855377197265625,
+        9.962615966796875
+      ]
+    },
+    {
+      "text": "budget-aware",
+      "bbox": [
+        407.7666931152344,
+        505.7857971191406,
+        52.34503173828125,
+        9.962615966796875
+      ]
+    },
+    {
+      "text": "gating",
+      "bbox": [
+        468.6083984375,
+        505.7857971191406,
+        23.4832763671875,
+        9.962615966796875
+      ]
+    },
+    {
+      "text": "mechanisms",
+      "bbox": [
+        501.787109375,
+        505.7857971191406,
+        47.04156494140625,
+        9.962615966796875
+      ]
+    },
+    {
+      "text": "[7],",
+      "bbox": [
+        557.1793212890625,
+        505.7857971191406,
+        13.2781982421875,
+        9.962615966796875
+      ]
+    }
+  ],
+  "page_lines": [
+    "• Failure",
+    "or failing to dynamically adjust the",
+    "retrieved evidence contradicts the initial",
+    "• Cost/Latency Implications: High",
+    "for planning, but retrievals can often",
+    "optimize wall-clock latency.",
+    "B. Retrieve-Reflect-Refine Pattern",
+    "The agent alternates retrieval and",
+    "reflection steps to decide if retrieved",
+    "and refines subsequent actions (e.g., query",
+    "gating) accordingly [6]. Recent work such",
+    "introduces hierarchical retrieval interfaces",
+    "to progressively refine context acquisition",
+    "Fig. 6. Control-flow",
+    "design patterns through explicit decisions over task",
+    "[8].",
+    "C. Decomposition-Based Retrieval Pattern",
+    "Rather than producing a full plan upfront, the agent decom-",
+    "poses the query implicitly through stepwise reasoning, trigger-",
+    "ing retrieval mid-trajectory based on evolving hypotheses [9],",
+    "[12]. Emerging approaches such as DLLM-Searcher [79] ex-",
+    "plore diffusion-based language models to parallelize reasoning",
+    "trajectories, reducing latency while maintaining diverse search",
+    "exploration.",
+    "• Control Flow: (i) Generate reasoning step → (ii) for-",
+    "mulate retrieval action → (iii) incorporate observation →",
+    "repeat [9].",
+    "• Strengths: Highly adaptable; allows the system to dis-",
+    "cover the next information need based on partial infer-",
+    "ence, mimicking human investigative behavior [12].",
+    "• Limitations: The repeated interleaving of reasoning and",
+    "map demonstrating how Agentic RAG systems compose tool calls creates highly redundant prompt prefixes [80].",
+    "decomposition, retrieval • Typical Use Cases: Complex investigative tasks where",
+    "timing, iterative refinement, and orchestration. This structural mapping high- subsequent logical steps are entirely dependent on the",
+    "lights the transition from linear pipelines to cyclic loops.",
+    "specific facts uncovered in the previous step [3].",
+    "• Failure Modes: Reasoning drift, where the agent forgets",
+    "Modes: Hallucinating an unsolvable sub-question the original objective after a long sequence of intermedi-",
+    "plan when newly ate observations.",
+    "premise. • Cost/Latency Implications: Extremely expensive com-",
+    "upfront token cost putationally due to repeated prompt accumulation and",
+    "be parallelized to sequential bottlenecking [80].",
+    "D. Tool-Augmented Retrieval Loop Pattern",
+    "Retrieval is treated as just one tool among many (e.g.,",
+    "generation with explicit calculators, code execution, SQL). The agent dynamically",
+    "evidence is sufficient, chooses among these heterogeneous tools in an iterative loop",
+    "rewriting, retrieval to update its state [10].",
+    "as A-RAG [18] • Control Flow: (i) Decide next tool → (ii) execute tool",
+    "that allow agents → (iii) process observation → (iv) update state → repeat",
+    "through staged [15].",
+    "document exploration, improving token efficiency and retrieval",
+    "relevance.",
+    "• Control Flow: (i) Retrieve → (ii) draft partial answer →",
+    "(iii) reflect on document utility → (iv) refine query →",
+    "repeat until stop [5].",
+    "• Strengths: Improves factuality and citation accuracy by",
+    "establishing a “retrieval-on-demand” critique signal rather",
+    "than blindly passing context [6].",
+    "• Limitations: Relies heavily on the LLM’s inherent self-",
+    "critique capabilities, which can suffer from evaluation",
+    "blind spots or over-confidence.",
+    "• Typical Use Cases: Long-form attributed generation",
+    "and open-domain QA where initial retrieval is typically",
+    "imperfect [78].",
+    "• Failure Modes: Infinite loops where the agent repeatedly",
+    "refines a query but retrieves the same unhelpful docu-",
+    "ments.",
+    "• Cost/Latency Implications: Introduces sequential itera-",
+    "tions that compound latency and increase compute over-",
+    "head, motivating budget-aware gating mechanisms [7],"
+  ],
+  "embedding_text": "document exploration, improving token efficiency and retrieval\nrelevance.\n• Control Flow: (i) Retrieve → (ii) draft partial answer →\n(iii) reflect on document utility → (iv) refine query →\nrepeat until stop [5].\n• Strengths: Improves factuality and citation accuracy by\nestablishing a “retrieval-on-demand” critique signal rather\nthan blindly passing context [6].\n• Limitations: Relies heavily on the LLM’s inherent self-\ncritique capabilities, which can suffer from evaluation\nblind spots or over-confidence.\n• Typical Use Cases: Long-form attributed generation\nand open-domain QA where initial retrieval is typically\nimperfect [78].\n• Failure Modes: Infinite loops where the agent repeatedly\nrefines a query but retrieves the same unhelpful docu-\nments.\n• Cost/Latency Implications: Introduces sequ [IMAGE: 4753x8192 table]",
+  "keywords": [
+    "retrieval",
+    "reasoning",
+    "query",
+    "where",
+    "document",
+    "exploration",
+    "control",
+    "flow",
+    "partial",
+    "repeat"
+  ],
+  "position": null,
+  "transform": null,
+  "document_name": "2603.07379v1.pdf",
+  "extraction_timestamp": "2026-04-12T23:31:58.736551",
+  "searchable_fields": {
+    "has_keywords": true,
+    "text_length": 3547,
+    "image_dimension_category": "large"
+  }
+}

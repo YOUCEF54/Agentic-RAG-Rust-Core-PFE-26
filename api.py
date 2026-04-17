@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy
+from get_hardware_config import load_hardware_config, run_hardware_calibration
 
 APP_NAME = "Agentic-RAG-Rust-Core-PFE-26"
 
@@ -45,8 +46,11 @@ EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 # Chunking
-CHUNK_SIZE = 256
-CHUNK_OVERLAP = 38
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
+MIN_CHUNK_LEN = int(os.getenv("MIN_CHUNK_LEN", "30"))
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "4"))
+HARDWARE_CONFIG_PATH = os.getenv("HARDWARE_CONFIG_PATH", "hardware_config.json")
 
 # OpenRouter
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -67,9 +71,14 @@ _INDEX_INFO: Dict[str, Any] = {
   "pages": None,
   "chunks": None,
   "last_error": None,
+  "chunking": "markdown_semantic_v2",
+  "embed_batch_size": EMBED_BATCH_SIZE,
+  "hardware_config_mtime": None,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 _EMBED_MODEL_READY = False
+_ACTIVE_EMBED_BATCH_SIZE = EMBED_BATCH_SIZE
+_HARDWARE_CONFIG_MTIME: Optional[float] = None
 
 # CORS (frontend integration)
 # _cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
@@ -100,6 +109,10 @@ app.add_middleware(
 class IndexRequest(BaseModel):
   rebuild: bool = True
   max_pages: Optional[int] = None
+  run_hardware_test: bool = False
+  save_hardware_config: bool = True
+  hardware_quick_test: bool = True
+  hardware_max_runtime_seconds: float = 25.0
 
 
 class QueryRequest(BaseModel):
@@ -132,6 +145,12 @@ class DocumentMeta(BaseModel):
   updated_at: Optional[str] = None
   sha256: Optional[str] = None
   pages: Optional[int] = None
+
+
+class HardwareCalibrationRequest(BaseModel):
+  save_config: bool = True
+  quick_mode: bool = True
+  max_runtime_seconds: float = 25.0
 
 
 def ensure_dirs() -> None:
@@ -206,6 +225,42 @@ def sse_event(event: str, data: Any) -> str:
   return f"event: {event}\ndata: {payload}\n\n"
 
 
+def set_active_embed_batch_size(batch_size: int) -> int:
+  global _ACTIVE_EMBED_BATCH_SIZE
+  _ACTIVE_EMBED_BATCH_SIZE = max(1, int(batch_size))
+  _INDEX_INFO["embed_batch_size"] = _ACTIVE_EMBED_BATCH_SIZE
+  return _ACTIVE_EMBED_BATCH_SIZE
+
+
+def refresh_hardware_config_if_needed(force: bool = False) -> Optional[Dict[str, Any]]:
+  global _HARDWARE_CONFIG_MTIME
+  config_path = Path(HARDWARE_CONFIG_PATH)
+  if not config_path.exists():
+    return None
+  try:
+    mtime = config_path.stat().st_mtime
+  except Exception:
+    return None
+  if not force and _HARDWARE_CONFIG_MTIME is not None and mtime <= _HARDWARE_CONFIG_MTIME:
+    return None
+  config = load_hardware_config(HARDWARE_CONFIG_PATH)
+  if not config:
+    return None
+  optimal_batch_size = config.get("optimal_batch_size")
+  if optimal_batch_size is None:
+    return None
+  try:
+    set_active_embed_batch_size(int(optimal_batch_size))
+  except Exception:
+    return None
+  _HARDWARE_CONFIG_MTIME = mtime
+  _INDEX_INFO["hardware_config_mtime"] = mtime
+  return config
+
+
+refresh_hardware_config_if_needed(force=True)
+
+
 def ensure_embed_model_loaded() -> None:
   global _EMBED_MODEL_READY
   if not _EMBED_MODEL_READY:
@@ -215,19 +270,52 @@ def ensure_embed_model_loaded() -> None:
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
   """Embed indexed passages via Rust fastembed (BGE expects 'passage:' prefix)."""
+  refresh_hardware_config_if_needed(force=False)
   ensure_embed_model_loaded()
   prefixed_texts = [f"passage: {t}" for t in texts]
-  return rag_rust.embed_texts_rust(prefixed_texts)
+  return rag_rust.embed_texts_rust(prefixed_texts, _ACTIVE_EMBED_BATCH_SIZE)
 
 
 def embed_query(query: str) -> List[float]:
   """Embed query via Rust fastembed with BGE query prefix."""
   ensure_embed_model_loaded()
   prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
-  return rag_rust.embed_texts_rust([prefixed_query])[0]
+  return rag_rust.embed_texts_rust([prefixed_query], 1)[0]
 
 
-def load_pdf_pages_with_meta(max_pages: Optional[int]) -> List[Dict[str, Any]]:
+def chunk_markdown_page(md: str, max_chars: int = CHUNK_SIZE) -> List[str]:
+  chunks: List[str] = []
+  current_title: str = ""
+  current_body: List[str] = []
+
+  def flush() -> None:
+    if not current_body and not current_title:
+      return
+    body = "\n".join(current_body).strip()
+    chunk = f"{current_title}\n{body}".strip() if current_title else body
+    if not chunk or len(chunk.strip()) <= MIN_CHUNK_LEN:
+      return
+    if len(chunk) > max_chars:
+      sub_chunks = rag_rust.semantic_chunker(chunk, max_chars, CHUNK_OVERLAP)
+      chunks.extend([sub for sub in sub_chunks if len(sub.strip()) > MIN_CHUNK_LEN])
+      return
+    chunks.append(chunk)
+
+  for line in md.splitlines():
+    stripped = line.strip()
+    if not stripped:
+      continue
+    if stripped.startswith("#"):
+      flush()
+      current_title = stripped.lstrip("#").strip()
+      current_body = []
+    else:
+      current_body.append(stripped)
+  flush()
+  return chunks
+
+
+def load_pdf_markdown_pages_with_meta(max_pages: Optional[int]) -> List[Dict[str, Any]]:
   paths = list(PDF_DIR.glob("*.pdf"))
   if not paths:
     raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
@@ -237,14 +325,14 @@ def load_pdf_pages_with_meta(max_pages: Optional[int]) -> List[Dict[str, Any]]:
 
   for path in paths:
     try:
-      file_pages = rag_rust.load_pdf_pages_many([str(path)])
+      file_pages_md = rag_rust.load_pdf_pages_markdown([str(path)])
     except Exception as exc:
-      raise HTTPException(status_code=500, detail=f"Rust PDF loader failed: {exc}") from exc
+      raise HTTPException(status_code=500, detail=f"Rust markdown PDF loader failed: {exc}") from exc
 
-    page_counts[path.name] = len(file_pages)
-    for idx, text in enumerate(file_pages, start=1):
-      if text and text.strip():
-        pages.append({"filename": path.name, "page": idx, "text": text})
+    page_counts[path.name] = len(file_pages_md)
+    for idx, markdown in enumerate(file_pages_md, start=1):
+      if markdown and markdown.strip():
+        pages.append({"filename": path.name, "page": idx, "markdown": markdown})
       if max_pages is not None and len(pages) >= max_pages:
         update_pages_meta(page_counts)
         return pages
@@ -253,24 +341,14 @@ def load_pdf_pages_with_meta(max_pages: Optional[int]) -> List[Dict[str, Any]]:
   return pages
 
 
-def chunk_text(text: str) -> List[str]:
-  if not text or not text.strip():
-    return []
-  return [
-    chunk
-    for chunk in rag_rust.smart_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
-    if chunk
-  ]
-
-
 def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
   global _INDEX_READY
-  pages = load_pdf_pages_with_meta(max_pages)
+  pages = load_pdf_markdown_pages_with_meta(max_pages)
 
   display_chunks: List[str] = []
   embed_chunks: List[str] = []
   for page in pages:
-    page_chunks = chunk_text(page["text"])
+    page_chunks = chunk_markdown_page(page["markdown"], max_chars=CHUNK_SIZE)
     for chunk in page_chunks:
       display_chunks.append(format_chunk_with_meta(page["filename"], page["page"], chunk))
       embed_chunks.append(chunk)
@@ -296,17 +374,43 @@ def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
     "pages": len(pages),
     "chunks": len(display_chunks),
     "rebuild": rebuild,
+    "chunking": "markdown_semantic_v2",
+    "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
   }
 
 
-def run_index(rebuild: bool, max_pages: Optional[int]) -> dict:
+def run_index(
+  rebuild: bool,
+  max_pages: Optional[int],
+  run_hardware_test: bool = False,
+  save_hardware_config: bool = True,
+  hardware_quick_test: bool = True,
+  hardware_max_runtime_seconds: float = 25.0,
+) -> dict:
   global _INDEX_STATUS, _INDEX_INFO, _INDEX_READY
   _INDEX_STATUS = "building"
   _INDEX_READY = False
   _INDEX_INFO["last_error"] = None
   start = time.perf_counter()
+  hardware_result: Optional[Dict[str, Any]] = None
   try:
+    if run_hardware_test:
+      hardware_result = run_hardware_calibration(
+        save_to_file=save_hardware_config,
+        config_path=HARDWARE_CONFIG_PATH,
+        quick_mode=hardware_quick_test,
+        max_runtime_seconds=hardware_max_runtime_seconds,
+      )
+      optimal_batch_size = hardware_result.get("optimal_batch_size")
+      if optimal_batch_size is not None:
+        set_active_embed_batch_size(int(optimal_batch_size))
+      if save_hardware_config:
+        refresh_hardware_config_if_needed(force=True)
+    else:
+      refresh_hardware_config_if_needed(force=False)
     stats = build_index(rebuild, max_pages)
+    if hardware_result:
+      stats["hardware_calibration"] = hardware_result
   except HTTPException as exc:
     _INDEX_STATUS = "error"
     _INDEX_INFO["last_error"] = exc.detail
@@ -324,6 +428,8 @@ def run_index(rebuild: bool, max_pages: Optional[int]) -> dict:
       "last_build_ms": build_ms,
       "pages": stats.get("pages"),
       "chunks": stats.get("chunks"),
+      "chunking": stats.get("chunking"),
+      "embed_batch_size": stats.get("embed_batch_size"),
     }
   )
   _INDEX_STATUS = "ready"
@@ -368,7 +474,13 @@ def openrouter_chat(messages: List[dict], model_override: Optional[str]) -> tupl
 
 @app.get("/health")
 def health():
-  return {"status": "ok"}
+  refresh_hardware_config_if_needed(force=False)
+  return {
+    "status": "ok",
+    "chunking": "markdown_semantic_v2",
+    "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+    "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
+  }
 
 
 @app.post("/documents")
@@ -430,6 +542,8 @@ def clear_index() -> None:
       "last_build_ms": None,
       "last_build_at": None,
       "last_error": None,
+      "chunking": "markdown_semantic_v2",
+      "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     }
   )
 
@@ -464,15 +578,58 @@ def delete_document(filename: str, rebuild_index: bool = True):
 
 @app.post("/index")
 def build_index_endpoint(payload: IndexRequest):
-  return run_index(payload.rebuild, payload.max_pages)
+  return run_index(
+    payload.rebuild,
+    payload.max_pages,
+    run_hardware_test=payload.run_hardware_test,
+    save_hardware_config=payload.save_hardware_config,
+    hardware_quick_test=payload.hardware_quick_test,
+    hardware_max_runtime_seconds=payload.hardware_max_runtime_seconds,
+  )
 
 
 @app.get("/index/status")
 def index_status():
+  refresh_hardware_config_if_needed(force=False)
   return {
     "status": _INDEX_STATUS,
     "ready": _INDEX_READY,
     "info": _INDEX_INFO,
+  }
+
+
+@app.get("/hardware/config")
+def hardware_config():
+  refresh_hardware_config_if_needed(force=False)
+  config = load_hardware_config(HARDWARE_CONFIG_PATH)
+  return {
+    "config": config,
+    "active_embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+    "config_path": HARDWARE_CONFIG_PATH,
+    "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
+  }
+
+
+@app.post("/hardware/calibrate")
+def hardware_calibrate(payload: HardwareCalibrationRequest = HardwareCalibrationRequest()):
+  try:
+    result = run_hardware_calibration(
+      save_to_file=payload.save_config,
+      config_path=HARDWARE_CONFIG_PATH,
+      quick_mode=payload.quick_mode,
+      max_runtime_seconds=payload.max_runtime_seconds,
+    )
+  except Exception as exc:
+    raise HTTPException(status_code=500, detail=f"Hardware calibration failed: {exc}") from exc
+  optimal_batch_size = result.get("optimal_batch_size")
+  if optimal_batch_size is not None:
+    set_active_embed_batch_size(int(optimal_batch_size))
+  if payload.save_config:
+    refresh_hardware_config_if_needed(force=True)
+  return {
+    "hardware_calibration": result,
+    "active_embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+    "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
   }
 
 

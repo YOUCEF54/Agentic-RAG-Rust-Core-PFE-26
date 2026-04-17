@@ -2,6 +2,9 @@
 use pdf_oxide::PdfDocument;
 use pdf_oxide::pipeline::{TextPipeline, TextPipelineConfig};
 use pdf_oxide::pipeline::reading_order::ReadingOrderContext;
+use pdfium_render::prelude::*;
+use pdf_oxide::ReadingOrder;
+use pdf_oxide::pipeline::converters::OutputConverter;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -17,8 +20,8 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::connect;
 use tokio::runtime::Runtime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-
-const EMBED_BATCH_SIZE: usize = 64;
+use pyo3::exceptions::PyRuntimeError;
+// const EMBED_BATCH_SIZE: usize = 16;
 
 static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -51,22 +54,24 @@ fn load_embed_model() -> PyResult<()> {
 }
 
 #[pyfunction]
-fn embed_texts_rust(py: Python<'_>, texts: Vec<String>) -> PyResult<Vec<Vec<f32>>> {
+fn embed_texts_rust(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize) -> PyResult<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
 
+    // 1. Prevent panics/degradation from invalid batch sizes
+    let batch_size = embed_batch_size.clamp(2,256);
+
+    // 2. Release the GIL for the entire CPU-bound embedding process
     let embeddings = py.allow_threads(|| {
         let embedder = get_embedder()?;
-        let guard = embedder
-            .lock()
-            .map_err(|_| "Embedder mutex poisoned".to_string())?;
-        guard
-            .embed(texts, Some(EMBED_BATCH_SIZE))
-            .map_err(|e| format!("Fastembed embed failed: {e:?}"))
+        let guard = embedder.lock().map_err(|_| "Embedder mutex poisoned")?;
+
+        guard.embed(texts, Some(batch_size))
+             .map_err(|e| format!("Fastembed failed: {e}"))
     });
 
-    embeddings.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    embeddings.map_err(|e| PyRuntimeError::new_err(e))
 }
 
 #[pyfunction]
@@ -99,7 +104,9 @@ fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec
         }
         current_pos = end_pos;
         if current_pos < total && current_pos > overlap {
-            current_pos -= overlap;
+            // current_pos -= overlap;
+            let next_pos = if current_pos > overlap { current_pos - overlap } else { end_pos };
+            current_pos = std::cmp::max(next_pos, current_pos + 1); // Force forward progress
         }
     }
     Ok(chunks)
@@ -128,31 +135,206 @@ fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
     let mut doc = PdfDocument::open(path)
         .map_err(|e| format!("Could not open PDF: {:?}", e))?;
 
-    let mut pages_text = Vec::new();
     let config = TextPipelineConfig::default();
-    let pipeline = TextPipeline::with_config(config);
+    let pipeline = TextPipeline::with_config(config.clone());
+    let converter = pdf_oxide::pipeline::converters::MarkdownOutputConverter::new();
 
     let num_pages = doc.page_count()
         .map_err(|e| format!("Could not get page count: {:?}", e))?;
 
+    let mut pages_text = Vec::new();
+
     for i in 0..num_pages {
-        if let Ok(spans) = doc.extract_spans(i) {
-            let context = ReadingOrderContext::default().with_page(i as u32);
+        // 1. Pass the ColumnAware parameter directly to the extraction method
+        if let Ok(spans) = doc.extract_spans_with_reading_order(i, ReadingOrder::ColumnAware) {
+            
+            // 2. The context now only needs the page number
+            let context = ReadingOrderContext::default()
+                .with_page(i as u32);
+
             if let Ok(ordered_spans) = pipeline.process(spans, context) {
-                let mut page_full_text = String::new();
-                for span in ordered_spans {
-                    page_full_text.push_str(&span.span.text);
-                    page_full_text.push(' ');
-                }
-                let trimmed = page_full_text.trim().to_string();
-                if !trimmed.is_empty() {
-                    pages_text.push(trimmed);
+                if let Ok(markdown) = converter.convert(&ordered_spans, &config) {
+                    let trimmed = markdown.trim().to_string();
+                    if !trimmed.is_empty() {
+                        pages_text.push(trimmed);
+                    }
                 }
             }
         }
     }
 
     Ok(pages_text)
+}
+#[pyfunction]
+fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
+    let mut results: Vec<(usize, Vec<String>)> = paths
+        .par_iter()
+        .enumerate()
+        .map(|(idx, path)| {
+            let bind = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
+                .or_else(|_| Pdfium::bind_to_system_library())
+                .map_err(|e| format!("Failed to bind to PDFium: {:?}", e))?;
+            let pdfium = Pdfium::new(bind);
+            let doc = pdfium
+                .load_pdf_from_file(path, None)
+                .map_err(|e| format!("Could not open PDF: {:?}", e))?;
+
+            let pages = doc
+                .pages()
+                .iter()
+                .filter_map(|page| {
+                    page.text().ok().map(|t| t.all().trim().to_string()).filter(|s| !s.is_empty())
+                })
+                .collect::<Vec<_>>();
+
+            Ok((idx, pages))
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+
+    results.sort_by_key(|(idx, _)| *idx);
+    Ok(results.into_iter().flat_map(|(_, pages)| pages).collect())
+}
+
+
+#[pyfunction]
+fn semantic_chunker(
+    text: String,
+    max_chars: usize,
+    overlap: usize,
+) -> PyResult<Vec<String>> {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current_chunk = String::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let is_heading = looks_like_heading(trimmed);
+
+        // flush on heading boundary if chunk has content
+        if is_heading && !current_chunk.is_empty() {
+            let chunk = current_chunk.trim().to_string();
+            if chunk.len() > 30 {
+                chunks.push(chunk);
+            }
+            current_chunk = String::new();
+        }
+
+        current_chunk.push_str(trimmed);
+        current_chunk.push('\n');
+
+        // flush on size limit — try to break at sentence boundary
+        if current_chunk.len() >= max_chars {
+            let chunk = current_chunk.trim().to_string();
+            // find last sentence boundary
+            let break_at = find_sentence_boundary(&chunk, max_chars);
+            let (head, tail) = chunk.split_at(break_at.min(chunk.len()));
+
+            if !head.trim().is_empty() {
+                chunks.push(head.trim().to_string());
+            }
+
+            // overlap: carry tail into next chunk
+            current_chunk = if overlap > 0 && tail.len() > overlap {
+                tail[tail.len() - overlap..].to_string()
+            } else {
+                tail.to_string()
+            };
+        }
+    }
+
+    // flush remainder
+    let remainder = current_chunk.trim().to_string();
+    if remainder.len() > 30 {
+        chunks.push(remainder);
+    }
+
+    Ok(chunks)
+}
+
+fn looks_like_heading(line: &str) -> bool {
+    // markdown heading let config
+    if line.starts_with('#') {
+        return true;
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.is_empty() {
+        return false;
+    }
+    // short line (≤ 8 words), ends without period, starts with capital or digit
+    // e.g. "3.2 Stage 1: Parallel Object Detection"
+    let starts_ok = words[0].chars().next()
+        .map(|c| c.is_uppercase() || c.is_ascii_digit())
+        .unwrap_or(false);
+
+    words.len() <= 8
+        && !line.ends_with('.')
+        && !line.ends_with(',')
+        && starts_ok
+}
+
+fn find_sentence_boundary(text: &str, near: usize) -> usize {
+    let bytes = text.as_bytes();
+    let search_from = near.min(text.len()).saturating_sub(200);
+
+    // walk backwards from `near` looking for ". " or "\n"
+    let mut best = near.min(text.len());
+    for i in (search_from..best).rev() {
+        if i + 1 < bytes.len()
+            && (bytes[i] == b'.' || bytes[i] == b'\n')
+            && (bytes[i + 1] == b' ' || bytes[i + 1] == b'\n')
+        {
+            best = i + 1;
+            break;
+        }
+    }
+    best
+}
+#[pyfunction]
+fn load_pdf_pages_markdown(paths: Vec<String>) -> PyResult<Vec<String>> {
+    let mut results: Vec<(usize, Vec<String>)> = paths
+        .par_iter()
+        .enumerate()
+        .map(|(idx, path)| {
+            extract_markdown_from_path(path).map(|pages| (idx, pages))
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+
+    results.sort_by_key(|(idx, _)| *idx);
+
+    let mut all_pages = Vec::new();
+    for (_, pages) in results {
+        all_pages.extend(pages);
+    }
+    Ok(all_pages)
+}
+
+fn extract_markdown_from_path(path: &str) -> Result<Vec<String>, String> {
+    let mut doc = PdfDocument::open(path)
+        .map_err(|e| format!("Could not open PDF: {:?}", e))?;
+
+    let num_pages = doc.page_count()
+        .map_err(|e| format!("Could not get page count: {:?}", e))?;
+
+    let mut pages_md = Vec::new();
+
+    for i in 0..num_pages {
+        match doc.to_markdown(i, &Default::default()) {
+            Ok(md) => {
+                let trimmed = md.trim().to_string();
+                if !trimmed.is_empty() {
+                    pages_md.push(trimmed);
+                }
+            }
+            Err(_) => continue, // skip pages that fail, don't crash
+        }
+    }
+
+    Ok(pages_md)
 }
 
 fn extract_page_texts_with_numbers(path: &str) -> Result<Vec<(usize, String)>, String> {
@@ -455,9 +637,12 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
     m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
+    m.add_function(wrap_pyfunction!(semantic_chunker, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
+    m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search, m)?)?;
+    m.add_function(wrap_pyfunction!(load_pdf_pages_pdfium_many, m)?)?;
     m.add_function(wrap_pyfunction!(extract_visual_elements, m)?)?;
     Ok(())
 }
