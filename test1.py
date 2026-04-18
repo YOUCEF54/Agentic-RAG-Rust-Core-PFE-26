@@ -29,9 +29,11 @@ else:
     print(f"Processing: {paths}")
     
     try:
-        pages = rag_rust.load_pdf_pages_pdfium_many(paths)
+        pages = rag_rust.load_pdf_pages_pdfium_many([str(p) for p in paths])
         print(f"Extracted {len(pages)} pages.")
-        for i, page in enumerate(pages):
-            print(f"--- Page {i+1} ---\n{page}...\n")
+        
+        with open("pages.txt", "w", encoding="utf-8") as f:
+            for i, page in enumerate(pages):
+                f.write(f"--- Page {i+1} ---\n{page}...\n")
     except Exception as e:
         print(f"Error: {e}")

@@ -296,7 +296,7 @@ def chunk_markdown_page(md: str, max_chars: int = CHUNK_SIZE) -> List[str]:
     if not chunk or len(chunk.strip()) <= MIN_CHUNK_LEN:
       return
     if len(chunk) > max_chars:
-      sub_chunks = rag_rust.semantic_chunker(chunk, max_chars, CHUNK_OVERLAP)
+      sub_chunks = rag_rust.basic_chunker(chunk, max_chars, CHUNK_OVERLAP)
       chunks.extend([sub for sub in sub_chunks if len(sub.strip()) > MIN_CHUNK_LEN])
       return
     chunks.append(chunk)

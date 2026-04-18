@@ -194,7 +194,7 @@ def chunk_markdown_page(md: str, max_chars: int = CHUNK_SIZE) -> list[str]:
             return
         # If the body is too large, split it further
         if len(chunk) > max_chars:
-            sub = rag_rust.semantic_chunker(chunk, max_chars, CHUNK_OVERLAP)
+            sub = rag_rust.basic_chunker(chunk, max_chars, CHUNK_OVERLAP)
             chunks.extend(s for s in sub if len(s.strip()) > 30)
         else:
             chunks.append(chunk)

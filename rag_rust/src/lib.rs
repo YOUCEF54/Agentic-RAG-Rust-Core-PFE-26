@@ -7,7 +7,7 @@ use pdf_oxide::ReadingOrder;
 use pdf_oxide::pipeline::converters::OutputConverter;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 use once_cell::sync::OnceCell;
 use arrow_array::{
     FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch,
@@ -25,6 +25,7 @@ use pyo3::exceptions::PyRuntimeError;
 
 static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
+
 
 fn get_runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
@@ -165,44 +166,87 @@ fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
 
     Ok(pages_text)
 }
+
 #[pyfunction]
 fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
-    let mut results: Vec<(usize, Vec<String>)> = paths
+    let results: Vec<(usize, Vec<String>)> = paths
         .par_iter()
         .enumerate()
         .map(|(idx, path)| {
+            // Bindings MUST be created per-thread/per-file for C-FFI safety
             let bind = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
                 .or_else(|_| Pdfium::bind_to_system_library())
                 .map_err(|e| format!("Failed to bind to PDFium: {:?}", e))?;
+                
             let pdfium = Pdfium::new(bind);
             let doc = pdfium
                 .load_pdf_from_file(path, None)
-                .map_err(|e| format!("Could not open PDF: {:?}", e))?;
+                .map_err(|e| format!("Could not open PDF {}: {:?}", path, e))?;
 
-            let pages = doc
-                .pages()
-                .iter()
-                .filter_map(|page| {
-                    page.text().ok().map(|t| t.all().trim().to_string()).filter(|s| !s.is_empty())
-                })
-                .collect::<Vec<_>>();
+            let mut pages_content = Vec::new();
 
-            Ok((idx, pages))
+            for page in doc.pages().iter() {
+                if let Ok(text_ptr) = page.text() {
+                    let raw_text = text_ptr.all();
+                    let cleaned = clean_research_text(&raw_text);
+                    if !cleaned.is_empty() {
+                        pages_content.push(cleaned);
+                    }
+                }
+            }
+            Ok((idx, pages_content))
         })
         .collect::<Result<Vec<_>, String>>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
 
-    results.sort_by_key(|(idx, _)| *idx);
-    Ok(results.into_iter().flat_map(|(_, pages)| pages).collect())
+    let mut sorted_results = results;
+    sorted_results.sort_by_key(|(idx, _)| *idx);
+    
+    Ok(sorted_results.into_iter().flat_map(|(_, p)| p).collect())
 }
 
+fn clean_research_text(text: &str) -> String {
+    // 1. Remove control characters
+    let no_control_chars: String = text
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect();
+
+    // 2. Fix the line breaks and hyphens
+    let lines: Vec<&str> = no_control_chars.lines().map(|l| l.trim()).collect();
+    let mut processed_text = String::new();
+    
+    for i in 0..lines.len() {
+        let current = lines[i];
+        if current.is_empty() { continue; }
+
+        processed_text.push_str(current);
+
+        if current.ends_with('-') {
+            processed_text.pop(); 
+        } else if i < lines.len() - 1 {
+            let last_char = current.chars().last().unwrap_or(' ');
+            if ".!?\":".contains(last_char) {
+                processed_text.push('\n'); 
+            } else {
+                processed_text.push(' '); 
+            }
+        }
+    }
+
+    // 3. Normalize spacing
+    processed_text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 #[pyfunction]
-fn semantic_chunker(
+fn basic_chunker(
     text: String,
     max_chars: usize,
     overlap: usize,
-) -> PyResult<Vec<String>> {
+    ) -> PyResult<Vec<String>> {
     let mut chunks: Vec<String> = Vec::new();
     let mut current_chunk = String::new();
 
@@ -459,7 +503,7 @@ fn lancedb_create_or_open(
     texts: Vec<String>,
     vectors: Vec<Vec<f32>>,
     overwrite: bool,
-) -> PyResult<()> {
+    ) -> PyResult<()> {
     get_runtime()
         .block_on(async {
             let db = connect(&db_dir)
@@ -491,7 +535,7 @@ fn lancedb_search(
     table_name: String,
     query_vector: Vec<f32>,
     top_k: usize,
-) -> PyResult<Vec<(String, f32)>> {
+    ) -> PyResult<Vec<(String, f32)>> {
     get_runtime()
         .block_on(async {
             let db = connect(&db_dir)
@@ -525,7 +569,7 @@ fn lancedb_search(
 fn build_batches(
     texts: &[String],
     vectors: &[Vec<f32>],
-) -> Result<RecordBatchIterator<std::vec::IntoIter<Result<RecordBatch, arrow_schema::ArrowError>>>, String> {
+    ) -> Result<RecordBatchIterator<std::vec::IntoIter<Result<RecordBatch, arrow_schema::ArrowError>>>, String> {
     if texts.is_empty() {
         return Err("No texts provided to build LanceDB table.".to_string());
     }
@@ -637,7 +681,7 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
     m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
-    m.add_function(wrap_pyfunction!(semantic_chunker, m)?)?;
+    m.add_function(wrap_pyfunction!(basic_chunker, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
