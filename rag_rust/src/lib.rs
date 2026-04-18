@@ -7,7 +7,7 @@ use pdf_oxide::ReadingOrder;
 use pdf_oxide::pipeline::converters::OutputConverter;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::sync::{Mutex};
+use std::sync::{Arc, Mutex};
 use once_cell::sync::OnceCell;
 use arrow_array::{
     FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch,
@@ -21,8 +21,8 @@ use lancedb::connect;
 use tokio::runtime::Runtime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use pyo3::exceptions::PyRuntimeError;
-// const EMBED_BATCH_SIZE: usize = 16;
 
+const MIN_CHUNK_CHARS: usize = 80;
 static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
@@ -189,7 +189,7 @@ fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
                 if let Ok(text_ptr) = page.text() {
                     let raw_text = text_ptr.all();
                     let cleaned = clean_research_text(&raw_text);
-                    if !cleaned.is_empty() {
+                    if !cleaned.is_empty() && !is_reference_page(&cleaned) {
                         pages_content.push(cleaned);
                     }
                 }
@@ -205,137 +205,167 @@ fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     Ok(sorted_results.into_iter().flat_map(|(_, p)| p).collect())
 }
 
+fn is_reference_page(text: &str) -> bool {
+    let ref_lines = text.lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with('[') && t.len() > 3 && t.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+        })
+        .count();
+    // If more than 40% of non-empty lines look like references, skip this page
+    let total = text.lines().filter(|l| !l.trim().is_empty()).count();
+    total > 0 && ref_lines * 100 / total > 40
+}
+
 fn clean_research_text(text: &str) -> String {
-    // 1. Remove control characters
-    let no_control_chars: String = text
-        .chars()
-        .filter(|c| !c.is_control() || c.is_whitespace())
+    // Split into paragraphs first — preserve them as structural units
+    let paragraphs: Vec<&str> = text.split("\n\n").collect();
+
+    let cleaned_paragraphs: Vec<String> = paragraphs
+        .iter()
+        .map(|para| {
+            // Within each paragraph: remove control chars, fix hyphenation, join lines
+            let no_ctrl: String = para
+                .chars()
+                .filter(|c| !c.is_control() || c.is_whitespace())
+                .collect();
+
+            let lines: Vec<&str> = no_ctrl.lines().map(|l| l.trim()).collect();
+            let mut buf = String::new();
+
+            for (i, &line) in lines.iter().enumerate() {
+                if line.is_empty() { continue; }
+                if line.ends_with('-') {
+                    // dehyphenate: "infor-\nmation" → "information"
+                    buf.push_str(&line[..line.len() - 1]);
+                } else {
+                    buf.push_str(line);
+                    if i < lines.len() - 1 {
+                        let last = line.chars().last().unwrap_or(' ');
+                        if ".!?\":".contains(last) {
+                            buf.push(' '); // sentence ended — single space is enough
+                        } else {
+                            buf.push(' '); // mid-sentence line break — just a space
+                        }
+                    }
+                }
+            }
+            // Normalize spacing WITHIN the paragraph only
+            buf.split_whitespace().collect::<Vec<_>>().join(" ")
+        })
+        .filter(|p| !p.is_empty())
         .collect();
 
-    // 2. Fix the line breaks and hyphens
-    let lines: Vec<&str> = no_control_chars.lines().map(|l| l.trim()).collect();
-    let mut processed_text = String::new();
-    
-    for i in 0..lines.len() {
-        let current = lines[i];
-        if current.is_empty() { continue; }
+    // Re-join paragraphs with double newline — preserved for split_sentences
+    cleaned_paragraphs.join("\n\n")
+}
 
-        processed_text.push_str(current);
+fn split_sentences(text: &str) -> Vec<String> {
+    let abbrevs = ["dr", "mr", "mrs", "prof", "fig", "et al", "e.g", "i.e", "vs", "no", "vol"];
 
-        if current.ends_with('-') {
-            processed_text.pop(); 
-        } else if i < lines.len() - 1 {
-            let last_char = current.chars().last().unwrap_or(' ');
-            if ".!?\":".contains(last_char) {
-                processed_text.push('\n'); 
-            } else {
-                processed_text.push(' '); 
+    // First split on paragraph boundaries — these are hard boundaries
+    let paragraphs: Vec<&str> = text.split("\n\n").map(str::trim).filter(|s| !s.is_empty()).collect();
+
+    let mut sentences: Vec<String> = Vec::new();
+
+    for paragraph in paragraphs {
+        let bytes = paragraph.as_bytes();
+        let mut start = 0;
+        let mut i = 0;
+
+        while i < bytes.len() {
+            if bytes[i] == b'.' || bytes[i] == b'!' || bytes[i] == b'?' {
+                let after = i + 1;
+                if after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\n') {
+                    let word_start = paragraph[..i]
+                        .rfind(|c: char| c.is_whitespace())
+                        .map(|p| p + 1)
+                        .unwrap_or(0);
+                    let word_before = paragraph[word_start..i].to_lowercase();
+                    let is_abbrev = abbrevs.iter().any(|&a| word_before == a)
+                        || word_before.len() == 1;
+
+                    if !is_abbrev {
+                        let s = paragraph[start..=i].trim().to_string();
+                        if !s.is_empty() { sentences.push(s); }
+                        start = after;
+                    }
+                }
             }
+            i += 1;
         }
+        // Remainder of paragraph (or the whole paragraph if no sentence boundary found)
+        let tail = paragraph[start..].trim().to_string();
+        if !tail.is_empty() { sentences.push(tail); }
     }
 
-    // 3. Normalize spacing
-    processed_text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    sentences
 }
 
 #[pyfunction]
-fn basic_chunker(
+fn sliding_window_chunker(
     text: String,
     max_chars: usize,
     overlap: usize,
     ) -> PyResult<Vec<String>> {
+    let sentences = split_sentences(&text);
     let mut chunks: Vec<String> = Vec::new();
-    let mut current_chunk = String::new();
+    let mut window: Vec<usize> = Vec::new();
+    let mut window_len: usize = 0;
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    for (idx, sent) in sentences.iter().enumerate() {
+        // Guard: single sentence exceeds max_chars — emit alone, reset window
+        if sent.len() > max_chars {
+            if !window.is_empty() {
+                let chunk = window.iter()
+                    .map(|&i| sentences[i].as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if chunk.len() >= MIN_CHUNK_CHARS { chunks.push(chunk); }
+                window.clear();
+                window_len = 0;
+            }
+            if sent.len() >= MIN_CHUNK_CHARS { chunks.push(sent.clone()); }
             continue;
         }
 
-        let is_heading = looks_like_heading(trimmed);
+        if window_len + sent.len() + 1 > max_chars && !window.is_empty() {
+            // Emit current window
+            let chunk = window.iter()
+                .map(|&i| sentences[i].as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if chunk.len() >= MIN_CHUNK_CHARS { chunks.push(chunk); }
 
-        // flush on heading boundary if chunk has content
-        if is_heading && !current_chunk.is_empty() {
-            let chunk = current_chunk.trim().to_string();
-            if chunk.len() > 30 {
-                chunks.push(chunk);
+            // Slide: drop from front ONLY while:
+            //   1. more than one sentence remains (always keep last as overlap seed)
+            //   2. dropping it still leaves enough to fill the overlap budget
+            while window.len() > 1 {
+                let front_len = sentences[window[0]].len() + 1;
+                // Would we still have >= overlap chars after dropping?
+                if window_len.saturating_sub(front_len) >= overlap {
+                    window_len = window_len.saturating_sub(front_len);
+                    window.remove(0);
+                } else {
+                    break;
+                }
             }
-            current_chunk = String::new();
         }
 
-        current_chunk.push_str(trimmed);
-        current_chunk.push('\n');
-
-        // flush on size limit — try to break at sentence boundary
-        if current_chunk.len() >= max_chars {
-            let chunk = current_chunk.trim().to_string();
-            // find last sentence boundary
-            let break_at = find_sentence_boundary(&chunk, max_chars);
-            let (head, tail) = chunk.split_at(break_at.min(chunk.len()));
-
-            if !head.trim().is_empty() {
-                chunks.push(head.trim().to_string());
-            }
-
-            // overlap: carry tail into next chunk
-            current_chunk = if overlap > 0 && tail.len() > overlap {
-                tail[tail.len() - overlap..].to_string()
-            } else {
-                tail.to_string()
-            };
-        }
+        window_len += sent.len() + 1;
+        window.push(idx);
     }
 
-    // flush remainder
-    let remainder = current_chunk.trim().to_string();
-    if remainder.len() > 30 {
-        chunks.push(remainder);
+    // Flush final window
+    if !window.is_empty() {
+        let chunk = window.iter()
+            .map(|&i| sentences[i].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if chunk.len() >= MIN_CHUNK_CHARS { chunks.push(chunk); }
     }
 
     Ok(chunks)
-}
-
-fn looks_like_heading(line: &str) -> bool {
-    // markdown heading let config
-    if line.starts_with('#') {
-        return true;
-    }
-    let words: Vec<&str> = line.split_whitespace().collect();
-    if words.is_empty() {
-        return false;
-    }
-    // short line (≤ 8 words), ends without period, starts with capital or digit
-    // e.g. "3.2 Stage 1: Parallel Object Detection"
-    let starts_ok = words[0].chars().next()
-        .map(|c| c.is_uppercase() || c.is_ascii_digit())
-        .unwrap_or(false);
-
-    words.len() <= 8
-        && !line.ends_with('.')
-        && !line.ends_with(',')
-        && starts_ok
-}
-
-fn find_sentence_boundary(text: &str, near: usize) -> usize {
-    let bytes = text.as_bytes();
-    let search_from = near.min(text.len()).saturating_sub(200);
-
-    // walk backwards from `near` looking for ". " or "\n"
-    let mut best = near.min(text.len());
-    for i in (search_from..best).rev() {
-        if i + 1 < bytes.len()
-            && (bytes[i] == b'.' || bytes[i] == b'\n')
-            && (bytes[i + 1] == b' ' || bytes[i + 1] == b'\n')
-        {
-            best = i + 1;
-            break;
-        }
-    }
-    best
 }
 #[pyfunction]
 fn load_pdf_pages_markdown(paths: Vec<String>) -> PyResult<Vec<String>> {
@@ -681,7 +711,7 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
     m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
-    m.add_function(wrap_pyfunction!(basic_chunker, m)?)?;
+    m.add_function(wrap_pyfunction!(sliding_window_chunker, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;

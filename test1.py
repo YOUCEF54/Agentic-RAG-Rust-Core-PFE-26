@@ -33,7 +33,11 @@ else:
         print(f"Extracted {len(pages)} pages.")
         
         with open("pages.txt", "w", encoding="utf-8") as f:
-            for i, page in enumerate(pages):
-                f.write(f"--- Page {i+1} ---\n{page}...\n")
+            for page_idx, page in enumerate(pages):
+                chunks = rag_rust.sliding_window_chunker(page, max_chars=800, overlap=100)
+                print(f"Page {page_idx+1}: {len(chunks)} chunks")
+                for chunk_idx, chunk in enumerate(chunks):
+                    f.write(f"--- Page {page_idx+1} Chunk {chunk_idx+1} ---\n{chunk}\n\n")
+                
     except Exception as e:
         print(f"Error: {e}")

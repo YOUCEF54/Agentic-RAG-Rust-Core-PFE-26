@@ -1,4 +1,4 @@
-﻿"""Hybrid RAG (Python orchestrator + Rust core).
+"""Hybrid RAG (Python orchestrator + Rust core).
 
 Features:
 - PDF hash caching (skip re-embed if PDFs unchanged)
@@ -174,54 +174,16 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return rag_rust.embed_texts_rust(prefixed, EMBED_BATCH_SIZE)
 
 
-# --- Chunking (markdown-based, replaces load_pdf_texts + chunk_texts) ---
-def chunk_markdown_page(md: str, max_chars: int = CHUNK_SIZE) -> list[str]:
-    """
-    Split one page's markdown into semantic chunks by heading boundaries.
-    Any line starting with # is a boundary. If the resulting body is still
-    too large, it is further split by smart_chunker.
-    """
-    chunks: list[str] = []
-    current_title: str = ""
-    current_body: list[str] = []
-
-    def flush():
-        if not current_body and not current_title:
-            return
-        body = "\n".join(current_body).strip()
-        chunk = f"{current_title}\n{body}".strip() if current_title else body
-        if not chunk or len(chunk.strip()) <= 30:
-            return
-        # If the body is too large, split it further
-        if len(chunk) > max_chars:
-            sub = rag_rust.basic_chunker(chunk, max_chars, CHUNK_OVERLAP)
-            chunks.extend(s for s in sub if len(s.strip()) > 30)
-        else:
-            chunks.append(chunk)
-
-    for line in md.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if stripped.startswith("#"):
-            flush()
-            current_title = stripped.lstrip("#").strip()
-            current_body = []
-        else:
-            current_body.append(stripped)
-
-    flush()
-    return chunks
-
-def load_and_chunk_markdown(paths: list[str]) -> list[str]:
-    pages_md = rag_rust.load_pdf_pages_markdown(paths)
-    print(f"Loaded {len(pages_md)} pages as markdown")
+# --- Chunking (PDFium + Sliding Window) ---
+def load_and_chunk_pdfium(paths: list[str]) -> list[str]:
+    pages_text = rag_rust.load_pdf_pages_pdfium_many(paths)
+    print(f"Loaded {len(pages_text)} pages via PDFium")
 
     all_chunks: list[str] = []
-    for md in pages_md:
-        if md and md.strip():
-            all_chunks.extend(chunk_markdown_page(md, max_chars=CHUNK_SIZE))
+    for text in pages_text:
+        if text and text.strip():
+            chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
+            all_chunks.extend(chunks)
 
     return [c for c in all_chunks if len(c.strip()) > 30]
 
@@ -255,7 +217,7 @@ def log_run_info() -> None:
     print("=== Run Info ===")
     print(f"Chat model   : {OPENROUTER_CHAT_MODEL}")
     print(f"Embed model  : {EMBED_MODEL_NAME}")
-    print(f"Chunking     : markdown-based (pdf_oxide)")
+    print(f"Chunking     : PDFium + Sliding Window")
     print("Embed engine : ONNX (Rust)")
     print("================")
 
@@ -278,7 +240,7 @@ if __name__ == "__main__":
 
     if needs_rebuild:
         t0 = time.perf_counter()
-        dataset = load_and_chunk_markdown(all_pdf_paths)
+        dataset = load_and_chunk_pdfium(all_pdf_paths)
         print(f"Loaded+chunked into {len(dataset)} chunks in {(time.perf_counter()-t0)*1000:.2f}ms")
         if dataset:
             avg_len = sum(len(c) for c in dataset) / len(dataset)
