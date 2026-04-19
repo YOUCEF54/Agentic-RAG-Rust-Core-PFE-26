@@ -21,6 +21,8 @@ use lancedb::connect;
 use tokio::runtime::Runtime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use pyo3::exceptions::PyRuntimeError;
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
+use lancedb::DistanceType;
 
 const MIN_CHUNK_CHARS: usize = 80;
 static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
@@ -166,7 +168,26 @@ fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
 
     Ok(pages_text)
 }
+fn is_reference_page(text: &str) -> bool {
+    let non_empty_lines: Vec<&str> = text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    
+    if non_empty_lines.is_empty() { return false; }
+    
+    let ref_lines = non_empty_lines.iter().filter(|l| {
+        l.starts_with('[') 
+        && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+    }).count();
 
+    // Also catch pages starting with "REFERENCES" header
+    let has_ref_header = non_empty_lines.iter()
+        .take(3)
+        .any(|l| l.to_uppercase().starts_with("REFERENCES"));
+
+    has_ref_header || (ref_lines * 100 / non_empty_lines.len() > 35)
+}
 #[pyfunction]
 fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     let results: Vec<(usize, Vec<String>)> = paths
@@ -205,26 +226,37 @@ fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     Ok(sorted_results.into_iter().flat_map(|(_, p)| p).collect())
 }
 
-fn is_reference_page(text: &str) -> bool {
-    let ref_lines = text.lines()
-        .filter(|l| {
-            let t = l.trim();
-            t.starts_with('[') && t.len() > 3 && t.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
-        })
-        .count();
-    // If more than 40% of non-empty lines look like references, skip this page
-    let total = text.lines().filter(|l| !l.trim().is_empty()).count();
-    total > 0 && ref_lines * 100 / total > 40
+fn is_reference_paragraph(para: &str) -> bool {
+    let lines: Vec<&str> = para.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() { return false; }
+
+    // Header line: "REFERENCES" or "References" alone
+    if lines.len() == 1 {
+        let u = lines[0].to_uppercase();
+        return u == "REFERENCES" || u == "BIBLIOGRAPHY";
+    }
+
+    let ref_lines = lines.iter().filter(|l| {
+        l.starts_with('[')
+            && l.len() > 3
+            && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+    }).count();
+
+    // >60% of lines look like "[N] Author..." → reference paragraph
+    ref_lines * 100 / lines.len() > 60
 }
 
 fn clean_research_text(text: &str) -> String {
-    // Split into paragraphs first — preserve them as structural units
     let paragraphs: Vec<&str> = text.split("\n\n").collect();
 
     let cleaned_paragraphs: Vec<String> = paragraphs
         .iter()
+        .filter(|para| !is_reference_paragraph(para.trim()))  // ← NEW filter
         .map(|para| {
-            // Within each paragraph: remove control chars, fix hyphenation, join lines
             let no_ctrl: String = para
                 .chars()
                 .filter(|c| !c.is_control() || c.is_whitespace())
@@ -236,27 +268,24 @@ fn clean_research_text(text: &str) -> String {
             for (i, &line) in lines.iter().enumerate() {
                 if line.is_empty() { continue; }
                 if line.ends_with('-') {
-                    // dehyphenate: "infor-\nmation" → "information"
                     buf.push_str(&line[..line.len() - 1]);
                 } else {
                     buf.push_str(line);
                     if i < lines.len() - 1 {
                         let last = line.chars().last().unwrap_or(' ');
                         if ".!?\":".contains(last) {
-                            buf.push(' '); // sentence ended — single space is enough
+                            buf.push('\n');  // ← P6 fix: preserve sentence boundary
                         } else {
-                            buf.push(' '); // mid-sentence line break — just a space
+                            buf.push(' ');
                         }
                     }
                 }
             }
-            // Normalize spacing WITHIN the paragraph only
             buf.split_whitespace().collect::<Vec<_>>().join(" ")
         })
         .filter(|p| !p.is_empty())
         .collect();
 
-    // Re-join paragraphs with double newline — preserved for split_sentences
     cleaned_paragraphs.join("\n\n")
 }
 
@@ -302,67 +331,77 @@ fn split_sentences(text: &str) -> Vec<String> {
     sentences
 }
 
+fn strip_academic_header(text: &str) -> &str {
+    if let Some(first_break) = text.find("\n\n") {
+        let first_para = &text[..first_break];
+        if first_para.contains('@') && first_para.len() < 600 {
+            return text[first_break..].trim_start();
+        }
+    }
+    if text.contains('@') && text.len() < 600 {
+        return "";
+    }
+    text
+}
+
 #[pyfunction]
 fn sliding_window_chunker(
-    text: String,
+    text:      String,
     max_chars: usize,
-    overlap: usize,
-    ) -> PyResult<Vec<String>> {
-    let sentences = split_sentences(&text);
-    let mut chunks: Vec<String> = Vec::new();
-    let mut window: Vec<usize> = Vec::new();
-    let mut window_len: usize = 0;
+    overlap:   usize,
+) -> PyResult<Vec<String>> {
+    let stripped = strip_academic_header(&text);
+    if stripped.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    for (idx, sent) in sentences.iter().enumerate() {
-        // Guard: single sentence exceeds max_chars — emit alone, reset window
-        if sent.len() > max_chars {
-            if !window.is_empty() {
-                let chunk = window.iter()
-                    .map(|&i| sentences[i].as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if chunk.len() >= MIN_CHUNK_CHARS { chunks.push(chunk); }
-                window.clear();
-                window_len = 0;
+    let sentences = split_sentences(stripped);
+    if sentences.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Compute overlap in sentences, not chars — avoids the over-drop bug
+    let avg_sent_len = sentences.iter().map(|s| s.len()).sum::<usize>() / sentences.len();
+    let overlap_sents = ((overlap + avg_sent_len - 1) / avg_sent_len).max(1);
+
+    let n = sentences.len();
+    let mut chunks: Vec<String> = Vec::new();
+    let mut start_idx: usize = 0;
+
+    loop {
+        if start_idx >= n { break; }
+
+        // Greedily fill window up to max_chars
+        let mut end_idx   = start_idx;
+        let mut window_len = 0usize;
+
+        while end_idx < n {
+            let add = sentences[end_idx].len() + if end_idx > start_idx { 1 } else { 0 };
+            if window_len + add > max_chars && end_idx > start_idx {
+                break;
             }
-            if sent.len() >= MIN_CHUNK_CHARS { chunks.push(sent.clone()); }
+            window_len += add;
+            end_idx += 1;
+        }
+
+        // Emit
+        let chunk = sentences[start_idx..end_idx].join(" ");
+        if chunk.len() >= MIN_CHUNK_CHARS {
+            chunks.push(chunk);
+        }
+
+        // Force progress if a single sentence exceeds max_chars
+        if end_idx == start_idx {
+            if sentences[start_idx].len() >= MIN_CHUNK_CHARS {
+                chunks.push(sentences[start_idx].clone());
+            }
+            start_idx += 1;
             continue;
         }
 
-        if window_len + sent.len() + 1 > max_chars && !window.is_empty() {
-            // Emit current window
-            let chunk = window.iter()
-                .map(|&i| sentences[i].as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if chunk.len() >= MIN_CHUNK_CHARS { chunks.push(chunk); }
-
-            // Slide: drop from front ONLY while:
-            //   1. more than one sentence remains (always keep last as overlap seed)
-            //   2. dropping it still leaves enough to fill the overlap budget
-            while window.len() > 1 {
-                let front_len = sentences[window[0]].len() + 1;
-                // Would we still have >= overlap chars after dropping?
-                if window_len.saturating_sub(front_len) >= overlap {
-                    window_len = window_len.saturating_sub(front_len);
-                    window.remove(0);
-                } else {
-                    break;
-                }
-            }
-        }
-
-        window_len += sent.len() + 1;
-        window.push(idx);
-    }
-
-    // Flush final window
-    if !window.is_empty() {
-        let chunk = window.iter()
-            .map(|&i| sentences[i].as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if chunk.len() >= MIN_CHUNK_CHARS { chunks.push(chunk); }
+        // Slide: next window starts overlap_sents before end, but always moves forward
+        let next = end_idx.saturating_sub(overlap_sents);
+        start_idx = next.max(start_idx + 1);
     }
 
     Ok(chunks)
@@ -526,14 +565,91 @@ fn extract_visual_elements(path: String, max_pages: Option<usize>) -> PyResult<V
     Ok(results)
 }
 
+// ── schema now carries source (filename) and page number ──────────────────
+fn build_batches(
+    texts:   &[String],
+    sources: &[String],   // NEW: PDF filename per chunk
+    pages:   &[i32],      // NEW: 1-based page number per chunk
+    vectors: &[Vec<f32>],
+) -> Result<
+    RecordBatchIterator<std::vec::IntoIter<Result<RecordBatch, arrow_schema::ArrowError>>>,
+    String,
+> {
+    if texts.is_empty() {
+        return Err("No texts provided.".to_string());
+    }
+    if texts.len() != vectors.len() || texts.len() != sources.len() || texts.len() != pages.len() {
+        return Err(format!(
+            "Length mismatch: texts={}, sources={}, pages={}, vectors={}",
+            texts.len(), sources.len(), pages.len(), vectors.len()
+        ));
+    }
+
+    let dim = vectors[0].len();
+    if dim == 0 {
+        return Err("Vectors have zero dimension.".to_string());
+    }
+    for v in vectors.iter() {
+        if v.len() != dim {
+            return Err("Inconsistent vector dimensions.".to_string());
+        }
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id",     DataType::Int32, false),
+        Field::new("source", DataType::Utf8,  false),  // NEW
+        Field::new("page",   DataType::Int32, false),  // NEW
+        Field::new("text",   DataType::Utf8,  false),
+        Field::new(
+            "vector",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dim as i32,
+            ),
+            true,
+        ),
+    ]));
+
+    let ids          = Int32Array::from_iter_values(0..texts.len() as i32);
+    let source_array = StringArray::from_iter_values(sources.iter().map(|s| s.as_str()));
+    let page_array   = Int32Array::from_iter_values(pages.iter().copied());
+    let text_array   = StringArray::from_iter_values(texts.iter().map(|s| s.as_str()));
+
+    let mut flat = Vec::with_capacity(vectors.len() * dim);
+    for v in vectors.iter() {
+        flat.extend_from_slice(v);
+    }
+    let values       = Float32Array::from(flat);
+    let value_field  = Arc::new(Field::new("item", DataType::Float32, true));
+    let vector_array = FixedSizeListArray::try_new(value_field, dim as i32, Arc::new(values), None)
+        .map_err(|e| format!("{:?}", e))?;
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(ids),
+            Arc::new(source_array),
+            Arc::new(page_array),
+            Arc::new(text_array),
+            Arc::new(vector_array),
+        ],
+    )
+    .map_err(|e| format!("{:?}", e))?;
+
+    Ok(RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema))
+}
+
+// ── updated create/open — now accepts sources and pages ───────────────────
 #[pyfunction]
 fn lancedb_create_or_open(
-    db_dir: String,
+    db_dir:     String,
     table_name: String,
-    texts: Vec<String>,
-    vectors: Vec<Vec<f32>>,
-    overwrite: bool,
-    ) -> PyResult<()> {
+    texts:      Vec<String>,
+    sources:    Vec<String>,  // NEW
+    pages:      Vec<i32>,     // NEW
+    vectors:    Vec<Vec<f32>>,
+    overwrite:  bool,
+) -> PyResult<()> {
     get_runtime()
         .block_on(async {
             let db = connect(&db_dir)
@@ -541,7 +657,8 @@ fn lancedb_create_or_open(
                 .await
                 .map_err(|e| format!("DB connect failed: {:?}", e))?;
 
-            let batches = build_batches(&texts, &vectors)?;
+            let batches = build_batches(&texts, &sources, &pages, &vectors)?;
+
             let mode = if overwrite {
                 CreateTableMode::Overwrite
             } else {
@@ -556,16 +673,17 @@ fn lancedb_create_or_open(
 
             Ok::<(), String>(())
         })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+        .map_err(|e| PyRuntimeError::new_err(e))
 }
 
+// ── search now returns (text, source, page, distance) ─────────────────────
 #[pyfunction]
 fn lancedb_search(
-    db_dir: String,
-    table_name: String,
+    db_dir:       String,
+    table_name:   String,
     query_vector: Vec<f32>,
-    top_k: usize,
-    ) -> PyResult<Vec<(String, f32)>> {
+    top_k:        usize,
+) -> PyResult<Vec<(String, String, i32, f32)>> {   // ← tuple now has 4 fields
     get_runtime()
         .block_on(async {
             let db = connect(&db_dir)
@@ -584,6 +702,7 @@ fn lancedb_search(
                 .limit(top_k)
                 .nearest_to(query_vector)
                 .map_err(|e| format!("nearest_to failed: {:?}", e))?
+                .distance_type(DistanceType::Cosine)
                 .execute()
                 .await
                 .map_err(|e| format!("Query execute failed: {:?}", e))?
@@ -593,98 +712,51 @@ fn lancedb_search(
 
             parse_search_results(batches)
         })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+        .map_err(|e| PyRuntimeError::new_err(e))
 }
 
-fn build_batches(
-    texts: &[String],
-    vectors: &[Vec<f32>],
-    ) -> Result<RecordBatchIterator<std::vec::IntoIter<Result<RecordBatch, arrow_schema::ArrowError>>>, String> {
-    if texts.is_empty() {
-        return Err("No texts provided to build LanceDB table.".to_string());
-    }
-    if texts.len() != vectors.len() {
-        return Err("Texts and vectors length mismatch.".to_string());
-    }
-
-    let dim = vectors[0].len();
-    if dim == 0 {
-        return Err("Vectors have zero dimension.".to_string());
-    }
-    for v in vectors.iter() {
-        if v.len() != dim {
-            return Err("Inconsistent vector dimensions.".to_string());
-        }
-    }
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("text", DataType::Utf8, false),
-        Field::new(
-            "vector",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dim as i32,
-            ),
-            true,
-        ),
-    ]));
-
-    let ids = Int32Array::from_iter_values(0..texts.len() as i32);
-    let text_array = StringArray::from_iter_values(texts.iter().map(|s| s.as_str()));
-    let mut flat = Vec::with_capacity(vectors.len() * dim);
-    for v in vectors.iter() {
-        flat.extend_from_slice(v);
-    }
-    let values = Float32Array::from(flat);
-    let value_field = Arc::new(Field::new("item", DataType::Float32, true));
-    let vector_array = FixedSizeListArray::try_new(
-        value_field,
-        dim as i32,
-        Arc::new(values),
-        None,
-    )
-    .map_err(|e| format!("{:?}", e))?;
-
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(ids), Arc::new(text_array), Arc::new(vector_array)],
-    )
-    .map_err(|e| format!("{:?}", e))?;
-
-    let iter = vec![Ok(batch)].into_iter();
-    Ok(RecordBatchIterator::new(iter, schema))
-}
-
-fn parse_search_results(batches: Vec<RecordBatch>) -> Result<Vec<(String, f32)>, String> {
+fn parse_search_results(
+    batches: Vec<RecordBatch>,
+) -> Result<Vec<(String, String, i32, f32)>, String> {
     let mut results = Vec::new();
 
     for batch in batches {
         let schema = batch.schema();
 
-        let text_idx = schema
-            .index_of("text")
-            .map_err(|_| "Missing 'text' column in results".to_string())?;
+        // ── text ──────────────────────────────────────────────────────────
         let text_col = batch
-            .column(text_idx)
+            .column(schema.index_of("text").map_err(|_| "Missing 'text' column")?)
             .as_any()
             .downcast_ref::<StringArray>()
-            .ok_or_else(|| "Invalid 'text' column type".to_string())?;
+            .ok_or("Invalid 'text' column type")?;
 
-        let dist_idx = schema.index_of("_distance").ok();
+        // ── source ────────────────────────────────────────────────────────
+        let source_col = batch
+            .column(schema.index_of("source").map_err(|_| "Missing 'source' column")?)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or("Invalid 'source' column type")?;
+
+        // ── page ──────────────────────────────────────────────────────────
+        let page_col = batch
+            .column(schema.index_of("page").map_err(|_| "Missing 'page' column")?)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or("Invalid 'page' column type")?;
+
+        // ── distance (optional — LanceDB adds _distance automatically) ────
         enum DistCol<'a> {
             F32(&'a Float32Array),
             F64(&'a Float64Array),
             None,
         }
-
-        let dist_col = match dist_idx {
+        let dist_col = match schema.index_of("_distance").ok() {
             Some(i) => {
                 let col = batch.column(i);
-                if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
-                    DistCol::F32(arr)
-                } else if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-                    DistCol::F64(arr)
+                if let Some(a) = col.as_any().downcast_ref::<Float32Array>() {
+                    DistCol::F32(a)
+                } else if let Some(a) = col.as_any().downcast_ref::<Float64Array>() {
+                    DistCol::F64(a)
                 } else {
                     DistCol::None
                 }
@@ -693,17 +765,65 @@ fn parse_search_results(batches: Vec<RecordBatch>) -> Result<Vec<(String, f32)>,
         };
 
         for row in 0..batch.num_rows() {
-            let text = text_col.value(row).to_string();
+            let text     = text_col.value(row).to_string();
+            let source   = source_col.value(row).to_string();
+            let page     = page_col.value(row);
             let distance = match &dist_col {
-                DistCol::F32(arr) => arr.value(row),
-                DistCol::F64(arr) => arr.value(row) as f32,
-                DistCol::None => 0.0,
+                DistCol::F32(a) => a.value(row),
+                DistCol::F64(a) => a.value(row) as f32,
+                DistCol::None   => 0.0,
             };
-            results.push((text, distance));
+            results.push((text, source, page, distance));
         }
     }
 
     Ok(results)
+}
+
+// ── filtered search: restrict results to one source document ──────────────
+#[pyfunction]
+fn lancedb_search_filtered(
+    db_dir:        String,
+    table_name:    String,
+    query_vector:  Vec<f32>,
+    top_k:         usize,
+    source_filter: Option<String>,   // e.g. Some("2603.07379v1.pdf")
+) -> PyResult<Vec<(String, String, i32, f32)>> {
+    get_runtime()
+        .block_on(async {
+            let db = connect(&db_dir)
+                .execute()
+                .await
+                .map_err(|e| format!("DB connect failed: {:?}", e))?;
+
+            let table = db
+                .open_table(&table_name)
+                .execute()
+                .await
+                .map_err(|e| format!("Open table failed: {:?}", e))?;
+
+            let mut q = table
+                .query()
+                .limit(top_k)
+                .nearest_to(query_vector)
+                .map_err(|e| format!("nearest_to failed: {:?}", e))?;
+
+            // Apply source filter when provided
+            if let Some(ref src) = source_filter {
+                q = q.only_if(format!("source = '{}'", src));
+            }
+
+            let batches = q
+                .execute()
+                .await
+                .map_err(|e| format!("Query execute failed: {:?}", e))?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| format!("Collect failed: {:?}", e))?;
+
+            parse_search_results(batches)
+        })
+        .map_err(|e| PyRuntimeError::new_err(e))
 }
 
 #[pymodule]
@@ -716,6 +836,7 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search, m)?)?;
+    m.add_function(wrap_pyfunction!(lancedb_search_filtered, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_pdfium_many, m)?)?;
     m.add_function(wrap_pyfunction!(extract_visual_elements, m)?)?;
     Ok(())

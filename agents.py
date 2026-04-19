@@ -1,5 +1,6 @@
 import re
 from typing import Any, Dict, List, Optional
+from utils.stop_words import stop_words
 
 class Agent:
     def __init__(self, name: str):
@@ -80,7 +81,11 @@ class Generator(Agent):
         self.chat_fn = chat_fn
         
     def run(self, state: dict) -> dict:
-        context = "\n".join(f" - {text}" for text, _ in state["chunks"])
+        context = "\n\n".join(
+            f"[Chunk {i+1} | {source} p.{page}]:\n{text}"
+            for i, (text, source, page, _dist) in enumerate(state["chunks"])
+        )
+
         instruction_prompt = (
             "You are a precise research assistant. Your goal is to answer questions using ONLY the provided context.\n\n"
             "STRICT RULES:\n"
@@ -117,64 +122,80 @@ class Evaluator(Agent):
         # On augmente le seuil d'exigence à 0.7 (70% de qualité minimum)
         self.min_score = min_score
         self.max_attempts = max_attempts
-    
-    def _score(self, query: str, answer: str, chunks: list) -> tuple[float, str, Optional[str]]:
+
+    def _faithfulness_precheck(self, answer: str, chunks: list) -> float | None:
+        """
+        Fast token-overlap check. If the answer shares very few tokens with 
+        any retrieved chunk, it's almost certainly hallucinated — return 0.0
+        immediately without calling the LLM.
+        Returns None if inconclusive (let LLM judge proceed).
+        """
+        answer_tokens = set(answer.lower().split())
+        # Remove stopwords that appear everywhere
+        stopwords = stop_words
+        answer_tokens -= stopwords
+        if not answer_tokens:
+            return 0.0
+
+        all_chunk_tokens: set[str] = set()
+        for item in chunks:
+            text = item[0] if isinstance(item, tuple) else item
+            all_chunk_tokens.update(text.lower().split())
+        all_chunk_tokens -= stopwords
+
+        if not all_chunk_tokens:
+            return None
+
+        overlap = len(answer_tokens & all_chunk_tokens) / len(answer_tokens)
+        # Less than 30% token overlap → likely hallucination
+        if overlap < 0.30:
+            return 0.0
+        return None  # inconclusive — proceed to LLM judge
+
+    def _score(self, query: str, answer: str, chunks: list) -> tuple[float, str, str | None]:
         if not answer.strip():
             return 0.0, "Empty answer.", None
-            
-        context = "\n".join(f" - {text}" for text, _ in chunks)
-        
-        # Prompt "LLM-as-a-Judge" (short, shareable summary only)
-        # eval_prompt = (
-        #     "You are a strict grading agent for a RAG system.\n"
-        #     "Evaluate the quality of the 'Generated Answer' based on the 'User Query' and the 'Retrieved Context'.\n\n"
-        #     "Criteria:\n"
-        #     "- Faithfulness: Is the answer derived strictly from the context without hallucinations?\n"
-        #     "- Relevance: Does the answer directly address the user's query?\n\n"
-        #     f"User Query: {query}\n"
-        #     f"Retrieved Context:\n{context}\n"
-        #     f"Generated Answer:\n{answer}\n\n"
-        #     "INSTRUCTIONS:\n"
-        #     "1. First, write 'SUMMARY: ' followed by a single short sentence.\n"
-        #     "2. Then, on a new line, write 'SCORE: ' followed by a float between 0.0 and 1.0.\n"
-        # )
-        eval_prompt = (
-            "You are a strict Auditor for an AI system. Compare the 'Generated Answer' against the 'Retrieved Context'.\n\n"
-            "Evaluation Tasks:\n"
-            "1. FAITHFULNESS: Identify any claim in the answer NOT found in the context. If the answer mentions "
-            "specific metrics (%), case studies, or names (e.g., 'stagedFlow') not in the context, it is a hallucination.\n"
-            "2. RELEVANCE: Does it answer the user's question?\n\n"
-            f"User Query: {query}\n"
-            f"Retrieved Context:\n{context}\n"
-            f"Generated Answer:\n{answer}\n\n"
-            "OUTPUT FORMAT:\n"
-            "SUMMARY: [Briefly explain if the answer is grounded or contains outside info]\n"
-            "SCORE: [A float between 0.0 and 1.0. Score 0.0 if any part is fabricated.]\n"
+
+        # Fast path: catch obvious hallucinations before LLM call
+        precheck = self._faithfulness_precheck(answer, chunks)
+        if precheck is not None:
+            return precheck, "Failed token-overlap faithfulness check.", None
+
+        context = "\n\n".join(
+            f"[Chunk {i+1}]:\n{text}"
+            for i, (text, *_) in enumerate(chunks)
         )
-        
-        messages = [{"role": "user", "content": eval_prompt}]
-        
+        # Folded prompt — works for small models
+        eval_message = (
+            "You are a strict auditor. Compare the Generated Answer to the Retrieved Context only.\n\n"
+            "Tasks:\n"
+            "1. FAITHFULNESS: Is every claim in the answer supported by the context? "
+            "If any claim is not in the context, it is a hallucination.\n"
+            "2. RELEVANCE: Does the answer address the question?\n\n"
+            f"Question: {query}\n\n"
+            f"Retrieved Context:\n{context}\n\n"
+            f"Generated Answer:\n{answer}\n\n"
+            "Respond with exactly two lines:\n"
+            "SUMMARY: <one sentence>\n"
+            "SCORE: <float 0.0-1.0>"
+        )
+        messages = [{"role": "user", "content": eval_message}]
+
         try:
             llm_response, model_used = self.chat_fn(messages)
-            lines = llm_response.strip().split("\n")
             summary = "No summary provided"
-            for line in lines:
+            for line in llm_response.strip().splitlines():
                 if line.strip().upper().startswith("SUMMARY:"):
                     summary = line.split(":", 1)[1].strip()
                     break
-            # Utilisation d'une regex pour extraire le score flottant de manière robuste
-            # au cas où le LLM serait trop bavard (ex: "The score is 0.85")
-            # Cherche "SCORE: 0.85" par exemple
-            match = re.search(r"SCORE:\s*(0\.\d+|1\.0)", llm_response)
+            match = re.search(r"SCORE:\s*(0\.\d+|1\.0|0|1)", llm_response)
             if match:
                 score = float(match.group(1))
             else:
-                # Fallback de parsing direct
-                score = 0.5 # neutral
-                
-            # Clamper la valeur entre 0.0 et 1.0 par sécurité
+                # Parse failed — log it and be conservative
+                print(f"[Evaluator] WARN: could not parse score from: {llm_response[:200]!r}")
+                score = 0.0   # ← P15 fix: conservative fallback, not 0.5
             return max(0.0, min(1.0, score)), summary, model_used
-            
         except Exception as e:
             return 0.0, f"Evaluation failed: {e}", None
     
@@ -209,14 +230,27 @@ class QueryRefiner(Agent):
 
     def run(self, state: dict) -> dict:
         prompt = (
-            "Rewrite the user query to be clearer and more specific for retrieval. "
-            "Keep the original intent, do not answer the query, and return only the rewritten query.\n\n"
+            "Rewrite the user query to be clearer and more specific for document retrieval. "
+            "Return ONLY the rewritten query, nothing else. No explanation, no preamble.\n\n"
             f"User query: {state['query']}"
         )
-        
         messages = [{"role": "user", "content": prompt}]
         refined_query, model_used = self.chat_fn(messages)
-        state["refined_query"] = refined_query.strip()
+        
+        # Strip preambles small models add: "Here is the rewritten query: ..."
+        lines = [l.strip() for l in refined_query.strip().splitlines() if l.strip()]
+        # Take last non-empty line — most models put the actual query last
+        cleaned = lines[-1] if lines else state["query"]
+        # Strip common preamble patterns
+        for prefix in ("rewritten query:", "query:", "here is", "revised query:", "refined query:"):
+            if cleaned.lower().startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+                break
+        # Final guard: if it's longer than 3x the original, it's not a query — fall back
+        if len(cleaned) > len(state["query"]) * 3:
+            cleaned = state["query"]
+
+        state["refined_query"] = cleaned
         models = state.setdefault("models", {})
         models["refiner"] = model_used
         Agent._trace(

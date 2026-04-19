@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterable
+from dataclasses import dataclass, field
 
 
 import requests
@@ -53,7 +54,7 @@ def get_env_int(name: str, default: int) -> int:
 # --- Config ---
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
 OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 60)
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "TinyLlama")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:1.5b")
 EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 TOP_K = get_env_int("TOP_K", 3)
@@ -83,7 +84,6 @@ def get_pdf_paths() -> list[Path]:
     if PDF_PATHS:
         return [Path(p) for p in PDF_PATHS]
     pdf_dir = Path(PDF_DIR)
-    print("Test (paths): ", sorted(pdf_dir.glob("*.pdf")) if pdf_dir.exists() else [])
     return sorted(pdf_dir.glob("*.pdf")) if pdf_dir.exists() else []
 
 
@@ -91,7 +91,6 @@ def get_pdf_paths() -> list[Path]:
 
 def compute_pdf_hash() -> str:
     paths = get_pdf_paths()
-    print("Test: (paths) : ", paths)
     h = hashlib.sha256()
     for p in paths:
         h.update(p.name.encode())
@@ -99,20 +98,26 @@ def compute_pdf_hash() -> str:
     h.update(f"{CHUNK_SIZE}_{CHUNK_OVERLAP}_{EMBED_MODEL_NAME}".encode())
     return h.hexdigest()
 
+def save_cache(pdf_hash: str, chunks: list[Chunk]) -> None:
+    serialized = [
+        {"text": c.text, "source": c.source, "page": c.page, "chunk_idx": c.chunk_idx}
+        for c in chunks
+    ]
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"hash": pdf_hash, "chunks": serialized}, f)
 
 def load_cache() -> dict:
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Deserialize back to Chunk objects
+        data["chunks"] = [
+            Chunk(text=c["text"], source=c["source"], page=c["page"], chunk_idx=c["chunk_idx"])
+            for c in data.get("chunks", [])
+        ]
+        return data
     except Exception:
         return {}
-
-
-def save_cache(pdf_hash: str, chunks: list[str]) -> None:
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"hash": pdf_hash, "chunks": chunks}, f)
-
-
 # --- Ollama ---
 
 def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
@@ -124,7 +129,6 @@ def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
             )
             if response.ok:
                 return response.json()
-            print("Test: (response) : ", response)
             try:
                 detail = response.json()
             except Exception:
@@ -156,48 +160,73 @@ def chat_complete(messages: list[dict]) -> tuple[str, str | None]:
 
 # --- Embedding ---
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_passages(texts: list[str]) -> list[list[float]]:
+    """For indexing — uses passage: prefix."""
     prefixed = [f"passage: {t}" for t in texts]
     return rag_rust.embed_texts_rust(prefixed, EMBED_BATCH_SIZE)
 
+def embed_query(text: str) -> list[float]:
+    """For retrieval — uses BGE query prefix, no passage: prefix."""
+    prefixed = f"{BGE_QUERY_PREFIX}{text}"
+    return rag_rust.embed_texts_rust([prefixed], EMBED_BATCH_SIZE)[0]
 
-# --- Chunking (PDFium + Sliding Window) ---
-def load_and_chunk_pdfium(paths: list[str]) -> list[str]:
-    pages_text = rag_rust.load_pdf_pages_pdfium_many(paths)
-    print(f"Loaded {len(pages_text)} pages via PDFium")
+# FIXED — return Chunk objects
 
-    all_chunks: list[str] = []
-    for text in pages_text:
-        if text and text.strip():
-            chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
-            all_chunks.extend(chunks)
+@dataclass
+class Chunk:
+    text: str
+    source: str
+    page: int
+    chunk_idx: int
+    char_len: int = field(init=False)
+    def __post_init__(self): self.char_len = len(self.text)
 
-    return [c for c in all_chunks if len(c.strip()) > 30]
+def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
+    all_chunks: list[Chunk] = []
+    for pdf_path in paths:
+        source_name = Path(pdf_path).name
+        pages = rag_rust.load_pdf_pages_pdfium_many([pdf_path])
+        print(f"  {source_name}: {len(pages)} pages")
+        for page_idx, text in enumerate(pages, start=1):
+            if not text or not text.strip():
+                continue
+            page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
+            for chunk_idx, chunk_text in enumerate(page_chunks):
+                if len(chunk_text.strip()) > 30:
+                    all_chunks.append(Chunk(
+                        text=chunk_text,
+                        source=source_name,
+                        page=page_idx,
+                        chunk_idx=chunk_idx,
+                    ))
+    return all_chunks
 
-
-# --- DB ---
-
-def build_or_open_table(chunks: list[str], needs_rebuild: bool) -> None:
+# build_or_open_table now takes chunk objects, not bare strings
+def build_or_open_table(chunks: list[Chunk], needs_rebuild: bool) -> None:
     if not needs_rebuild:
         print("DB is up-to-date, skipping.")
         return
 
-    print(f"Embedding {len(chunks)} chunks...")
+    texts   = [c.text   for c in chunks]
+    sources = [c.source for c in chunks]
+    pages   = [c.page   for c in chunks]
+
+    print(f"Embedding {len(texts)} chunks...")
     t0 = time.perf_counter()
-    embeddings = embed_texts(chunks)
+    embeddings = embed_passages(texts)
     embed_time = time.perf_counter() - t0
-    print(f"Embedding time: {embed_time*1000:.2f}ms ({len(chunks)/embed_time:.2f} chunks/s)")
+    print(f"Embedding time: {embed_time*1000:.2f}ms ({len(texts)/embed_time:.2f} chunks/s)")
 
-    rag_rust.lancedb_create_or_open(DB_DIR, TABLE_NAME, chunks, embeddings, True)
+    rag_rust.lancedb_create_or_open(
+        DB_DIR, TABLE_NAME, texts, sources, pages, embeddings, True
+    )
 
-
-# --- Retrieval ---
-
-def retrieve(query: str, top_k: int = TOP_K):
-    prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
-    query_embedding = embed_texts([prefixed_query])[0]
-    return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_embedding, top_k)
-
+# retrieve now returns Chunk-like tuples with provenance
+def retrieve(query: str, top_k: int = TOP_K, source_filter: str | None = None):
+    qvec = embed_query(query)   
+    if source_filter:
+        return rag_rust.lancedb_search_filtered(DB_DIR, TABLE_NAME, qvec, top_k, source_filter)
+    return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, qvec, top_k)
 
 # --- Logging ---
 
@@ -231,7 +260,7 @@ if __name__ == "__main__":
         dataset = load_and_chunk_pdfium(all_pdf_paths)
         print(f"Loaded+chunked into {len(dataset)} chunks in {(time.perf_counter()-t0)*1000:.2f}ms")
         if dataset:
-            avg_len = sum(len(c) for c in dataset) / len(dataset)
+            avg_len = sum(c.char_len for c in dataset) / len(dataset)
             print(f"Avg chunk length: {avg_len:.1f} chars")
 
         save_cache(current_hash, dataset)
@@ -268,8 +297,10 @@ if __name__ == "__main__":
 
     print("=== Retriever Agent ===")
     print("Retrieved chunks:")
-    for i, e in enumerate(state["chunks"]):
-        print(f"{i+1} - chunk: {e[0]}, similarity d: {e[1]}")
+    # chunks is now list of (text, source, page, distance)
+    for i, (text, source, page, dist) in enumerate(state["chunks"]):
+        print(f"{i+1} - [{source} p.{page}] dist={dist:.4f}: {text[:120]}...")
+
     print("================")
     print(f"\nChatbot response:\n{state['answer']}")
     print(f"Score: {state['score']} | Attempts: {state['attempts']}")
