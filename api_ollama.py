@@ -1,7 +1,7 @@
-"""API server for the Rust/Python RAG stack.
+"""API server for the Rust/Python RAG stack (Ollama backend).
 
 Run:
-  uvicorn api:app --reload
+  uvicorn api_ollama:app --reload
 """
 from __future__ import annotations
 
@@ -52,14 +52,17 @@ MIN_CHUNK_LEN = int(os.getenv("MIN_CHUNK_LEN", "30"))
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "4"))
 HARDWARE_CONFIG_PATH = os.getenv("HARDWARE_CONFIG_PATH", "hardware_config.json")
 
-# OpenRouter
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
-OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", APP_NAME)
-OPENROUTER_TIMEOUT = 60
-OPENROUTER_CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openrouter/free")
+# Ollama
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "60"))
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
 CHAT_TEMPERATURE = 0.2
+
+# Per-agent models
+REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
+EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
+SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
 
 # DPS (Dynamic Passage Selection)
 DPS_ENABLED     = True
@@ -419,39 +422,43 @@ def run_index(
   return stats
 
 
-def openrouter_headers() -> dict:
-  if not OPENROUTER_API_KEY:
-    raise HTTPException(status_code=400, detail="OPENROUTER_API_KEY is not set.")
-  key = OPENROUTER_API_KEY.strip().replace('"', "").replace("'", "")
-  headers = {
-    "Authorization": f"Bearer {key}",
-    "Content-Type": "application/json",
-  }
-  if OPENROUTER_HTTP_REFERER:
-    headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
-  if OPENROUTER_TITLE:
-    headers["X-Title"] = OPENROUTER_TITLE
-  return headers
+def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
+  for attempt in range(retries):
+    try:
+      url = f"{OLLAMA_BASE_URL}{path}"
+      response = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
+      if response.ok:
+        return response.json()
+      try:
+        detail = response.json()
+      except Exception:
+        detail = response.text
+      raise RuntimeError(f"Ollama error {response.status_code}: {detail}")
+    except (requests.exceptions.ConnectionError, RuntimeError) as e:
+      if attempt < retries - 1:
+        import time as _t; _t.sleep(3)
+      else:
+        raise HTTPException(status_code=502, detail=f"Ollama unavailable: {e}")
+  return {}
 
 
-def openrouter_chat(messages: List[dict], model_override: Optional[str]) -> tuple[str, Optional[str]]:
+def ollama_chat(model: str, messages: List[dict]) -> tuple[str, Optional[str]]:
   payload = {
-    "model": model_override or OPENROUTER_CHAT_MODEL,
+    "model": model,
     "messages": messages,
-    "temperature": CHAT_TEMPERATURE,
+    "stream": False,
+    "options": {"temperature": CHAT_TEMPERATURE},
   }
-  resp = requests.post(
-    f"{OPENROUTER_BASE_URL}/chat/completions",
-    json=payload,
-    headers=openrouter_headers(),
-    timeout=OPENROUTER_TIMEOUT,
-  )
-  if not resp.ok:
-    raise HTTPException(status_code=resp.status_code, detail=resp.text)
-  data = resp.json()
-  content = data["choices"][0]["message"]["content"]
-  model_used = data.get("model") or data.get("choices", [{}])[0].get("model")
-  return content, model_used
+  data = ollama_post("/chat", payload)
+  return data.get("message", {}).get("content", ""), data.get("model")
+
+
+# Per-agent chat functions
+chat_refiner   = lambda msgs: ollama_chat(REFINER_MODEL,   msgs)
+chat_generator = lambda msgs: ollama_chat(GENERATOR_MODEL, msgs)
+chat_evaluator = lambda msgs: ollama_chat(EVALUATOR_MODEL, msgs)
+chat_selector  = lambda msgs: ollama_chat(SELECTOR_MODEL,  msgs)
+chat_default   = lambda msgs: ollama_chat(OLLAMA_CHAT_MODEL, msgs)
 
 
 @app.get("/health")
@@ -653,12 +660,13 @@ def query(payload: QueryRequest):
       "Don't make up any new information:\n"
       f"{context_text}"
     )
-    answer, model_used = openrouter_chat(
+    naive_model = payload.chat_model or OLLAMA_CHAT_MODEL
+    answer, model_used = ollama_chat(
+      naive_model,
       [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": payload.question},
       ],
-      payload.chat_model,
     )
     return QueryResponse(
       answer=answer,
@@ -680,17 +688,16 @@ def query(payload: QueryRequest):
     state["retrieved_meta"] = meta
     return hits
 
-  chat_fn = lambda messages: openrouter_chat(messages, payload.chat_model)
-  refiner = QueryRefiner(chat_fn=chat_fn)
+  refiner = QueryRefiner(chat_fn=chat_refiner)
   retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
   selector = DynamicPassageSelector(
-    chat_fn=chat_fn,
+    chat_fn=chat_selector,
     max_passages=TOP_K_MAX,
     min_passages=TOP_K_MIN,
   ) if DPS_ENABLED else None
-  generator = Generator(chat_fn=chat_fn)
+  generator = Generator(chat_fn=chat_generator)
   evaluator = Evaluator(
-    chat_fn=chat_fn,
+    chat_fn=chat_evaluator,
     min_score=payload.min_score,
     max_attempts=payload.max_attempts,
   )
@@ -756,12 +763,13 @@ def query_stream(payload: QueryRequest):
         "Don't make up any new information:\n"
         f"{context_text}"
       )
-      answer, model_used = openrouter_chat(
+      naive_model = payload.chat_model or OLLAMA_CHAT_MODEL
+      answer, model_used = ollama_chat(
+        naive_model,
         [
           {"role": "system", "content": system_prompt},
           {"role": "user", "content": payload.question},
         ],
-        payload.chat_model,
       )
       yield sse_event("answer", {"answer": answer, "model_used": model_used})
       yield sse_event(
@@ -794,17 +802,16 @@ def query_stream(payload: QueryRequest):
       state["retrieved_meta"] = meta
       return hits
 
-    chat_fn = lambda messages: openrouter_chat(messages, payload.chat_model)
-    refiner = QueryRefiner(chat_fn=chat_fn)
+    refiner = QueryRefiner(chat_fn=chat_refiner)
     retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
     selector = DynamicPassageSelector(
-      chat_fn=chat_fn,
+      chat_fn=chat_selector,
       max_passages=TOP_K_MAX,
       min_passages=TOP_K_MIN,
     ) if DPS_ENABLED else None
-    generator = Generator(chat_fn=chat_fn)
+    generator = Generator(chat_fn=chat_generator)
     evaluator = Evaluator(
-      chat_fn=chat_fn,
+      chat_fn=chat_evaluator,
       min_score=payload.min_score,
       max_attempts=payload.max_attempts,
     )

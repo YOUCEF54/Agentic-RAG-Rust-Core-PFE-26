@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import requests
 from dotenv import load_dotenv
 
-from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy
+from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 import rag_rust
 
 
@@ -54,10 +54,16 @@ def get_env_int(name: str, default: int) -> int:
 # --- Config ---
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
 OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 60)
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:1.5b")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
 EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 TOP_K = get_env_int("TOP_K", 3)
+# --- DPS Config ---
+DPS_ENABLED     = True
+TOP_N_RETRIEVAL = 15    # candidates fetched from vector DB
+TOP_K_MAX       = 8     # hard ceiling — DPS can never select more than this
+TOP_K_MIN       = 1     # hard floor
+SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL", "qwen2.5:3b")  # needs basic reasoning
 
 DB_DIR = os.getenv("DB_DIR", "lancedb")
 TABLE_NAME = "pdf_chunks"
@@ -120,6 +126,7 @@ def load_cache() -> dict:
         return {}
 # --- Ollama ---
 
+
 def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
@@ -134,30 +141,34 @@ def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
             except Exception:
                 detail = response.text
             raise RuntimeError(f"Ollama error {response.status_code}: {detail}")
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, RuntimeError) as e:
             if attempt < retries - 1:
-                print(f"Connection error, retrying ({attempt+1}/{retries})...")
-                time.sleep(2)
+                print(f"Ollama error/connection issue, retrying ({attempt+1}/{retries})... Error: {e}")
+                time.sleep(3)
             else:
                 raise
     return {}
 
-
-def chat_complete(messages: list[dict]) -> tuple[str, str | None]:
+def ollama_chat(model: str, messages: list[dict]) -> tuple[str, str | None]:
     payload = {
-        "model": OLLAMA_CHAT_MODEL,
+        "model": model,
         "messages": messages,
         "stream": False,
-        "options": {
-            "temperature": CHAT_TEMPERATURE
-        }
+        "options": {"temperature": CHAT_TEMPERATURE}
     }
     data = ollama_post("/chat", payload)
-    content = data.get("message", {}).get("content", "")
-    model_used = data.get("model")
-    return content, model_used
+    return data.get("message", {}).get("content", ""), data.get("model")
 
 
+REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
+EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
+SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
+
+chat_refiner   = lambda msgs: ollama_chat(REFINER_MODEL,   msgs)
+chat_generator = lambda msgs: ollama_chat(GENERATOR_MODEL, msgs)
+chat_evaluator = lambda msgs: ollama_chat(EVALUATOR_MODEL, msgs)
+chat_selector  = lambda msgs: ollama_chat(SELECTOR_MODEL,  msgs)
 # --- Embedding ---
 
 def embed_passages(texts: list[str]) -> list[list[float]]:
@@ -288,16 +299,22 @@ if __name__ == "__main__":
     }
 
     proxy = UserProxy(
-        refiner=QueryRefiner(chat_fn=chat_complete),
-        retriever=Retriever(retrieve_fn=retrieve, top_k=TOP_K),
-        generator=Generator(chat_fn=chat_complete),
-        evaluator=Evaluator(chat_fn=chat_complete, min_score=0.75),
+        refiner=QueryRefiner(chat_fn=chat_refiner),
+        retriever=Retriever(retrieve_fn=retrieve, top_k=TOP_K, top_n=TOP_N_RETRIEVAL),
+        selector=DynamicPassageSelector(
+            chat_fn=chat_selector,
+            max_passages=TOP_K_MAX,
+            min_passages=TOP_K_MIN,
+        ) if DPS_ENABLED else None,
+        generator=Generator(chat_fn=chat_generator),
+        evaluator=Evaluator(chat_fn=chat_evaluator, min_score=0.75),
     )
     state = proxy.run(state)
 
     print("=== Retriever Agent ===")
     print("Retrieved chunks:")
-    # chunks is now list of (text, source, page, distance)
+    print(f"\nDPS selected {len(state['chunks'])} of {state.get('dps_n_candidates', '?')} candidates")
+    print(f"Selected indices: {state.get('dps_selected_indices', [])}")
     for i, (text, source, page, dist) in enumerate(state["chunks"]):
         print(f"{i+1} - [{source} p.{page}] dist={dist:.4f}: {text[:120]}...")
 
@@ -305,3 +322,7 @@ if __name__ == "__main__":
     print(f"\nChatbot response:\n{state['answer']}")
     print(f"Score: {state['score']} | Attempts: {state['attempts']}")
     print(f"score: {state['score']} | retry: {state['should_retry']}")
+
+
+
+  

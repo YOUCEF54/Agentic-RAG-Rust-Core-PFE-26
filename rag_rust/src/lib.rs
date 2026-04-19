@@ -16,7 +16,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::connection::CreateTableMode;
-use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::connect;
 use tokio::runtime::Runtime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
@@ -830,14 +829,10 @@ fn lancedb_search_filtered(
 fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
-    m.add_function(wrap_pyfunction!(smart_chunker, m)?)?;
     m.add_function(wrap_pyfunction!(sliding_window_chunker, m)?)?;
-    m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
-    m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search_filtered, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_pdfium_many, m)?)?;
-    m.add_function(wrap_pyfunction!(extract_visual_elements, m)?)?;
     Ok(())
 }
