@@ -53,7 +53,7 @@ def get_env_int(name: str, default: int) -> int:
 
 # --- Config ---
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
-OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 60)
+OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 300)
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
 EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
@@ -141,7 +141,7 @@ def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
             except Exception:
                 detail = response.text
             raise RuntimeError(f"Ollama error {response.status_code}: {detail}")
-        except (requests.exceptions.ConnectionError, RuntimeError) as e:
+        except (requests.exceptions.RequestException, RuntimeError) as e:
             if attempt < retries - 1:
                 print(f"Ollama error/connection issue, retrying ({attempt+1}/{retries})... Error: {e}")
                 time.sleep(3)
@@ -296,7 +296,19 @@ if __name__ == "__main__":
         "should_retry": False,
         "model_used": "",
         "refined_query": "",
+        "trace": []
     }
+
+    print("\n=== Agent Traces (Live) ===", flush=True)
+    def terminal_emit(item):
+        agent_name = item.get("agent", "Unknown")
+        msg = item.get("message", "")
+        data = item.get("data")
+        print(f"[{agent_name}] {msg}", flush=True)
+        if data:
+            print(f"    Data: {data}", flush=True)
+    
+    state["emit"] = terminal_emit
 
     proxy = UserProxy(
         refiner=QueryRefiner(chat_fn=chat_refiner),
@@ -311,7 +323,7 @@ if __name__ == "__main__":
     )
     state = proxy.run(state)
 
-    print("=== Retriever Agent ===")
+    print("\n=== Retriever Agent ===")
     print("Retrieved chunks:")
     print(f"\nDPS selected {len(state['chunks'])} of {state.get('dps_n_candidates', '?')} candidates")
     print(f"Selected indices: {state.get('dps_selected_indices', [])}")

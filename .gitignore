@@ -17,6 +17,7 @@ test_embed.py
 test_extract.py
 *.onnx
 *.onnx.data
+*.tex
 # Build artifacts
 build/
 dist/

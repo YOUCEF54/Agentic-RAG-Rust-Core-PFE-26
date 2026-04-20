@@ -196,10 +196,14 @@ class Evaluator(Agent):
             llm_response, model_used = self.chat_fn(messages)
             summary = "No summary provided"
             for line in llm_response.strip().splitlines():
-                if line.strip().upper().startswith("SUMMARY:"):
-                    summary = line.split(":", 1)[1].strip()
+                if re.search(r"(?i)^\s*\*?\*?SUMMARY", line):
+                    parts = re.split(r":", line, maxsplit=1)
+                    if len(parts) > 1:
+                        summary = parts[1].strip("* ")
+                    else:
+                        summary = line.strip("* ")
                     break
-            match = re.search(r"SCORE:\s*(0\.\d+|1\.0|0|1)", llm_response)
+            match = re.search(r"(?i)SCORE[\s\*:]*(0\.\d+|1\.0|0|1)", llm_response)
             if match:
                 score = float(match.group(1))
             else:
@@ -302,8 +306,6 @@ class DynamicPassageSelector(Agent):
         self.min_passages = min_passages
 
     def _build_prompt(self, query: str, candidates: list) -> str:
-        # Format passages with 1-based index tokens exactly as in the paper:
-        # Input = Query: q || Passages: [1]p1 [2]p2 ... [n]pn
         passages_text = ""
         for i, (text, source, page, _dist) in enumerate(candidates, start=1):
             # Truncate individual passages to avoid token overflow

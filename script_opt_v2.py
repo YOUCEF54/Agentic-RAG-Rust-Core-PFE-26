@@ -315,7 +315,19 @@ if __name__ == "__main__":
         "should_retry": False,
         "model_used": "",
         "refined_query": "",
+        "trace": []
     }
+
+    print("\n=== Agent Traces (Live) ===", flush=True)
+    def terminal_emit(item):
+        agent_name = item.get("agent", "Unknown")
+        msg = item.get("message", "")
+        data = item.get("data")
+        print(f"[{agent_name}] {msg}", flush=True)
+        if data:
+            print(f"    Data: {data}", flush=True)
+    
+    state["emit"] = terminal_emit
 
     proxy = UserProxy(
         refiner=QueryRefiner(chat_fn=chat_complete),
@@ -330,7 +342,7 @@ if __name__ == "__main__":
     )
     state = proxy.run(state)
 
-    print("=== Retriever Agent ===")
+    print("\n=== Retriever Agent ===")
     print("Retrieved chunks:")
     print(f"\nDPS selected {len(state['chunks'])} of {state.get('dps_n_candidates', '?')} candidates")
     print(f"Selected indices: {state.get('dps_selected_indices', [])}")
