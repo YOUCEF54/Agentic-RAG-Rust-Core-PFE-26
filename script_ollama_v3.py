@@ -14,27 +14,14 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
-from dataclasses import dataclass, field # added
+from typing import Iterable, List
+from dataclasses import dataclass, field
 
 import requests
 from dotenv import load_dotenv
 
-from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector # added new agent (DynamicPassageSelector) 
-
+from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 import rag_rust
-
-# FIXED — return Chunk objects
-
-@dataclass
-class Chunk:
-    text: str
-    source: str
-    page: int
-    chunk_idx: int
-    char_len: int = field(init=False)
-    def __post_init__(self): self.char_len = len(self.text)
-
 
 # --- Platform/Env ---
 if sys.platform == "win32":
@@ -65,19 +52,20 @@ def get_env_int(name: str, default: int) -> int:
         raise ValueError(f"Environment variable {name} must be an integer, got: {value!r}") from exc
 
 # --- Config ---
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
 OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 300)
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "mistral:7b")
-EMBED_MODE = os.getenv("EMBED_MODE")
-if EMBED_MODE :
-    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "zembed-1"
-else:
-    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
+
+# Chat Models
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "mistral")
+#OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
+
+# Embedding Models
+EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "zembed-1"
+#EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
 
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 TOP_K = get_env_int("TOP_K", 3)
 
-# added
 # --- DPS Config ---
 DPS_ENABLED     = True
 TOP_N_RETRIEVAL = 15    # candidates fetched from vector DB
@@ -85,10 +73,9 @@ TOP_K_MAX       = 8     # hard ceiling — DPS can never select more than this
 TOP_K_MIN       = 1     # hard floor
 SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL", "qwen2.5:3b")  # needs basic reasoning
 
-
 DB_DIR = os.getenv("DB_DIR", "lancedb")
 TABLE_NAME = "pdf_chunks"
-REBUILD_DB = False
+REBUILD_DB = True
 
 CACHE_FILE = ".rag_cache.json"
 
@@ -99,13 +86,8 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 EMBED_BATCH_SIZE = 4
 
-# added
-BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
-
-
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
-
 
 # --- PDF paths ---
 
@@ -115,10 +97,7 @@ def get_pdf_paths() -> list[Path]:
     pdf_dir = Path(PDF_DIR)
     return sorted(pdf_dir.glob("*.pdf")) if pdf_dir.exists() else []
 
-
 # --- Cache ---
-
-
 
 def compute_pdf_hash() -> str:
     paths = get_pdf_paths()
@@ -129,6 +108,13 @@ def compute_pdf_hash() -> str:
     h.update(f"{CHUNK_SIZE}_{CHUNK_OVERLAP}_{EMBED_MODEL_NAME}".encode())
     return h.hexdigest()
 
+def save_cache(pdf_hash: str, chunks: list[Chunk]) -> None:
+    serialized = [
+        {"text": c.text, "source": c.source, "page": c.page, "chunk_idx": c.chunk_idx}
+        for c in chunks
+    ]
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"hash": pdf_hash, "chunks": serialized}, f)
 
 def load_cache() -> dict:
     try:
@@ -142,18 +128,6 @@ def load_cache() -> dict:
         return data
     except Exception:
         return {}
-    
-def save_cache(processed_files: list[str]) -> None:
-    # Save the list of filenames we have already embedded
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"processed_files": processed_files}, f)
-
-
-
-# def save_cache(pdf_hash: str, chunks: list[str]) -> None:
-#     with open(CACHE_FILE, "w", encoding="utf-8") as f:
-#         json.dump({"hash": pdf_hash, "chunks": chunks}, f)
-
 
 # --- Ollama ---
 
@@ -166,34 +140,18 @@ def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
             )
             if response.ok:
                 return response.json()
-            print("Test: (response) : ", response)
             try:
                 detail = response.json()
             except Exception:
                 detail = response.text
             raise RuntimeError(f"Ollama error {response.status_code}: {detail}")
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.RequestException, RuntimeError) as e:
             if attempt < retries - 1:
-                print(f"Connection error, retrying ({attempt+1}/{retries})...")
-                time.sleep(2)
+                print(f"Ollama error/connection issue, retrying ({attempt+1}/{retries})... Error: {e}")
+                time.sleep(3)
             else:
                 raise
     return {}
-
-
-# def chat_complete(messages: list[dict]) -> tuple[str, str | None]:
-#     payload = {
-#         "model": OLLAMA_CHAT_MODEL,
-#         "messages": messages,
-#         "stream": False,
-#         "options": {
-#             "temperature": CHAT_TEMPERATURE
-#         }
-#     }
-#     data = ollama_post("/chat", payload)
-#     content = data.get("message", {}).get("content", "")
-#     model_used = data.get("model")
-#     return content, model_used
 
 def ollama_chat(model: str, messages: list[dict]) -> tuple[str, str | None]:
     payload = {
@@ -208,7 +166,6 @@ def ollama_chat(model: str, messages: list[dict]) -> tuple[str, str | None]:
 REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
 GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
 EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
-SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
 
 chat_refiner   = lambda msgs: ollama_chat(REFINER_MODEL,   msgs)
 chat_generator = lambda msgs: ollama_chat(GENERATOR_MODEL, msgs)
@@ -217,22 +174,52 @@ chat_selector  = lambda msgs: ollama_chat(SELECTOR_MODEL,  msgs)
 
 # --- Embedding ---
 
-## zembed
-def embed_texts_zembed(texts: list[str]) -> list[list[float]]:
-    return rag_rust.embed_texts_rust_zembed(texts, EMBED_BATCH_SIZE)
+_EMBED_MODEL_READY = False
 
-## local
-def embed_passages_local(texts: list[str]) -> list[list[float]]:
-    """For indexing — uses passage: prefix."""
-    prefixed = [f"passage: {t}" for t in texts]
-    return rag_rust.embed_texts_rust(prefixed, EMBED_BATCH_SIZE)
+def ensure_embed_model_loaded() -> None:
+    global _EMBED_MODEL_READY
+    if not _EMBED_MODEL_READY:
+        rag_rust.load_embed_model()
+        _EMBED_MODEL_READY = True
 
-def embed_query_local(text: str) -> list[float]:
-    """For retrieval — uses BGE query prefix, no passage: prefix."""
-    prefixed = f"{BGE_QUERY_PREFIX}{text}"
-    return rag_rust.embed_texts_rust([prefixed], EMBED_BATCH_SIZE)[0]
+# --- Active: z-embed Implementation ---
+def embed_texts(texts: list[str], _batch_size) -> list[list[float]]:
+    """Embed indexed passages via Rust core (z-embed does not require passage prefixes)."""
+    ensure_embed_model_loaded()
+    return rag_rust.embed_texts_rust(texts, _batch_size)
 
-# --- Chunking (PDFium + Sliding Window) ---
+def embed_query(query: str) -> list[float]:
+    """Embed query via Rust core (z-embed does not require query prefixes)."""
+    ensure_embed_model_loaded()
+    return rag_rust.embed_texts_rust([query], 1)[0]
+
+
+# --- Commented: BGE Small Implementation ---
+# BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+#
+# def embed_texts_bge(texts: List[str]) -> List[List[float]]:
+#     """Embed indexed passages via Rust fastembed (BGE expects 'passage:' prefix)."""
+#     # refresh_hardware_config_if_needed(force=False)
+#     ensure_embed_model_loaded()
+#     prefixed_texts = [f"passage: {t}" for t in texts]
+#     return rag_rust.embed_texts_rust(prefixed_texts, EMBED_BATCH_SIZE)
+#
+# def embed_query_bge(query: str) -> List[float]:
+#     """Embed query via Rust fastembed with BGE query prefix."""
+#     ensure_embed_model_loaded()
+#     prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
+#     return rag_rust.embed_texts_rust([prefixed_query], 1)[0]
+
+
+@dataclass
+class Chunk:
+    text: str
+    source: str
+    page: int
+    chunk_idx: int
+    char_len: int = field(init=False)
+    def __post_init__(self): self.char_len = len(self.text)
+
 def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
     all_chunks: list[Chunk] = []
     for pdf_path in paths:
@@ -253,33 +240,9 @@ def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
                     ))
     return all_chunks
 
-# --- DB ---
-
-# def build_or_open_table(chunks: list[str], needs_rebuild: bool, embed_mode : bool = os.getenv("EMBED_MODE")) -> None:
-#     if not needs_rebuild:
-#         print("DB is up-to-date, skipping.")
-#         return
-
-#     texts   = [c.text   for c in chunks]
-#     sources = [c.source for c in chunks]
-#     pages   = [c.page   for c in chunks]
-
-#     print(f"Embedding {len(chunks)} chunks...")
-
-#     t0 = time.perf_counter()
-#     if embed_mode :
-#         embeddings = embed_texts_zembed(texts)
-#     else :
-#         embeddings = embed_passages_local(texts)
-#     embed_time = time.perf_counter() - t0
-#     print(f"Embedding time: {embed_time*1000:.2f}ms ({len(chunks)/embed_time:.2f} chunks/s)")
-
-#     rag_rust.lancedb_create_or_open(
-#         DB_DIR, TABLE_NAME, texts, sources, pages, embeddings, True
-#     )
-
-def build_or_open_table(chunks: list[Chunk], overwrite: bool) -> None:
-    if not chunks:
+def build_or_open_table(chunks: list[Chunk], needs_rebuild: bool) -> None:
+    if not needs_rebuild:
+        print("DB is up-to-date, skipping.")
         return
 
     texts   = [c.text   for c in chunks]
@@ -288,27 +251,23 @@ def build_or_open_table(chunks: list[Chunk], overwrite: bool) -> None:
 
     print(f"Embedding {len(texts)} chunks...")
     t0 = time.perf_counter()
-    if EMBED_MODE :
-        embeddings = embed_texts_zembed(texts)
-    else :
-        embeddings = embed_passages_local(texts)
+    embeddings = embed_texts(texts, 4)
     embed_time = time.perf_counter() - t0
     print(f"Embedding time: {embed_time*1000:.2f}ms ({len(texts)/embed_time:.2f} chunks/s)")
 
-    # Pass the overwrite flag down to Rust
+    # Construct the vector DB after generating embeddings
     rag_rust.lancedb_create_or_open(
-        DB_DIR, TABLE_NAME, texts, sources, pages, embeddings, overwrite
+        DB_DIR, TABLE_NAME, texts, sources, pages, embeddings, True
     )
-
 
 # --- Retrieval ---
 
+# retrieve now returns Chunk-like tuples with provenance
 def retrieve(query: str, top_k: int = TOP_K, source_filter: str | None = None):
-    qvec = embed_query_local(query)   
+    qvec = embed_query(query)   
     if source_filter:
         return rag_rust.lancedb_search_filtered(DB_DIR, TABLE_NAME, qvec, top_k, source_filter)
     return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, qvec, top_k)
-
 
 # --- Logging ---
 
@@ -317,12 +276,10 @@ def log_run_info() -> None:
     print(f"Chat model   : {OLLAMA_CHAT_MODEL}")
     print(f"Embed model  : {EMBED_MODEL_NAME}")
     print(f"Chunking     : PDFium + Sliding Window")
-    print(f"Embed engine : {"ZeroEntropy API (Rust)" if EMBED_MODE else "ONNX (Rust)"}")
+    print("Embed engine : ZeroEntropy API (Rust)")
     print("================")
 
-
 # --- Main ---
-
 
 if __name__ == "__main__":
     all_pdf_paths = [str(p) for p in get_pdf_paths()]
@@ -331,61 +288,29 @@ if __name__ == "__main__":
 
     print(f"Found {len(all_pdf_paths)} PDF(s): {[Path(p).name for p in all_pdf_paths]}")
     print("Loading embed model (once)...")
-    rag_rust.load_embed_model()
+    ensure_embed_model_loaded()
 
     current_hash = compute_pdf_hash()
-    processed_files = load_cache()
+    cache = load_cache()
     db_exists = Path(DB_DIR).exists()
-    # needs_rebuild = REBUILD_DB or not db_exists or cache.get("hash") != current_hash
+    needs_rebuild = REBUILD_DB or not db_exists or cache.get("hash") != current_hash
 
-    # if needs_rebuild:
-    #     t0 = time.perf_counter()
-    #     dataset = load_and_chunk_pdfium(all_pdf_paths)
-    #     print(f"Loaded+chunked into {len(dataset)} chunks in {(time.perf_counter()-t0)*1000:.2f}ms")
-    #     if dataset:
-    #         avg_len = sum(len(c) for c in dataset) / len(dataset)
-    #         print(f"Avg chunk length: {avg_len:.1f} chars")
-
-    #     save_cache(current_hash, dataset)
-    # else:
-    #     dataset = cache.get("chunks", [])
-    #     print(f"Cache hit: {len(dataset)} chunks loaded instantly, skipping PDF+embed.")
-        # Step 1: Determine what needs processing
-    if REBUILD_DB or not db_exists:
-        print("Force rebuild requested or DB missing. Processing ALL files...")
-        needs_process = all_pdf_paths
-        overwrite_db = True
-        processed_files = [] # Clear the cache memory
-    else:
-        # Step 2: Filter out files we've already done
-        needs_process = [p for p in all_pdf_paths if Path(p).name not in processed_files]
-        overwrite_db = False # We will APPEND
-
-    
-    # Step 3: Process and embed only what is necessary
-    if needs_process:
-        print(f"Processing {len(needs_process)} NEW PDF(s)...")
+    if needs_rebuild:
         t0 = time.perf_counter()
-        dataset = load_and_chunk_pdfium(needs_process)
+        dataset = load_and_chunk_pdfium(all_pdf_paths)
         print(f"Loaded+chunked into {len(dataset)} chunks in {(time.perf_counter()-t0)*1000:.2f}ms")
-        
         if dataset:
             avg_len = sum(c.char_len for c in dataset) / len(dataset)
             print(f"Avg chunk length: {avg_len:.1f} chars")
-            
-            build_or_open_table(dataset, overwrite=overwrite_db)
-            
-        # Update our tracking list and save to disk
-        processed_files.extend([Path(p).name for p in needs_process])
-        save_cache(list(set(processed_files))) # set() ensures no accidental duplicates
+
+        save_cache(current_hash, dataset)
     else:
-        print("DB is up-to-date. All PDFs are already embedded, skipping.")
+        dataset = cache.get("chunks", [])
+        print(f"Cache hit: {len(dataset)} chunks loaded instantly, skipping PDF+embed.")
 
-    log_run_info()
-
-    # t0 = time.perf_counter()
-    # build_or_open_table(dataset, needs_rebuild)
-    # print(f"DB build/open time: {(time.perf_counter()-t0)*1000:.2f}ms")
+    t0 = time.perf_counter()
+    build_or_open_table(dataset, needs_rebuild)
+    print(f"DB build/open time: {(time.perf_counter()-t0)*1000:.2f}ms")
 
     log_run_info()
 
@@ -427,6 +352,7 @@ if __name__ == "__main__":
     )
     state = proxy.run(state)
 
+    print("\n=== Retriever Agent ===")
     print("Retrieved chunks:")
     print(f"\nDPS selected {len(state['chunks'])} of {state.get('dps_n_candidates', '?')} candidates")
     print(f"Selected indices: {state.get('dps_selected_indices', [])}")

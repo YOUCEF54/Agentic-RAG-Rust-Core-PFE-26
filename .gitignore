@@ -53,6 +53,7 @@ rag_rust/target/
 **/target/
 extracted_images_with_context
 smart_chunk.rs
+*.lock
 
 # Editors / OS
 .vscode/

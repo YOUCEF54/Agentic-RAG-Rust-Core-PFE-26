@@ -180,7 +180,7 @@ fn embed_texts_rust_local(py: Python<'_>, texts: Vec<String>, embed_batch_size: 
 
 
 #[pyfunction]
-fn embed_query_rust(py: Python<'_>, query: String) -> PyResult<Vec<f32>> {
+fn embed_query_rust_zembed(py: Python<'_>, query: String) -> PyResult<Vec<f32>> {
     py.allow_threads(|| {
         get_runtime().block_on(async {
             let mut vecs = ze_embed(vec![query], "query", 1).await?;
@@ -736,13 +736,49 @@ fn build_batches(
     Ok(RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema))
 }
 // ── updated create/open — now accepts sources and pages ───────────────────
+// #[pyfunction]
+// fn lancedb_create_or_open(
+//     db_dir:     String,
+//     table_name: String,
+//     texts:      Vec<String>,
+//     sources:    Vec<String>,  // NEW
+//     pages:      Vec<i32>,     // NEW
+//     vectors:    Vec<Vec<f32>>,
+//     overwrite:  bool,
+//     ) -> PyResult<()> {
+//     get_runtime()
+//         .block_on(async {
+//             let db = connect(&db_dir)
+//                 .execute()
+//                 .await
+//                 .map_err(|e| format!("DB connect failed: {:?}", e))?;
+
+//             let batches = build_batches(&texts, &sources, &pages, &vectors)?;
+
+//             let mode = if overwrite {
+//                 CreateTableMode::Overwrite
+//             } else {
+//                 CreateTableMode::exist_ok(|b| b)
+//             };
+
+//             db.create_table(&table_name, Box::new(batches))
+//                 .mode(mode)
+//                 .execute()
+//                 .await
+//                 .map_err(|e| format!("Table create failed: {:?}", e))?;
+
+//             Ok::<(), String>(())
+//         })
+//         .map_err(|e| PyRuntimeError::new_err(e))
+// }
+// ── updated create/open — now handles APPENDING ───────────────────────────
 #[pyfunction]
 fn lancedb_create_or_open(
     db_dir:     String,
     table_name: String,
     texts:      Vec<String>,
-    sources:    Vec<String>,  // NEW
-    pages:      Vec<i32>,     // NEW
+    sources:    Vec<String>,
+    pages:      Vec<i32>,
     vectors:    Vec<Vec<f32>>,
     overwrite:  bool,
 ) -> PyResult<()> {
@@ -753,19 +789,37 @@ fn lancedb_create_or_open(
                 .await
                 .map_err(|e| format!("DB connect failed: {:?}", e))?;
 
+            // Safety check: Don't do anything if there's no data to insert
+            if vectors.is_empty() {
+                return Ok::<(), String>(());
+            }
+
             let batches = build_batches(&texts, &sources, &pages, &vectors)?;
 
-            let mode = if overwrite {
-                CreateTableMode::Overwrite
-            } else {
-                CreateTableMode::exist_ok(|b| b)
-            };
+            // Check if the table already exists
+            let table_names = db.table_names().execute().await.unwrap_or_default();
+            let table_exists = table_names.contains(&table_name);
 
-            db.create_table(&table_name, Box::new(batches))
-                .mode(mode)
-                .execute()
-                .await
-                .map_err(|e| format!("Table create failed: {:?}", e))?;
+            if overwrite || !table_exists {
+                // OVERWRITE / CREATE MODE
+                db.create_table(&table_name, Box::new(batches))
+                    .mode(CreateTableMode::Overwrite)
+                    .execute()
+                    .await
+                    .map_err(|e| format!("Table create failed: {:?}", e))?;
+            } else {
+                // APPEND MODE
+                let table = db
+                    .open_table(&table_name)
+                    .execute()
+                    .await
+                    .map_err(|e| format!("Open table failed: {:?}", e))?;
+                    
+                table.add(Box::new(batches))
+                    .execute()
+                    .await
+                    .map_err(|e| format!("Table add failed: {:?}", e))?;
+            }
 
             Ok::<(), String>(())
         })
@@ -932,7 +986,7 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model_local, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust_local, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust_zembed, m)?)?;
-    m.add_function(wrap_pyfunction!(embed_query_rust, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_query_rust_zembed, m)?)?;
     m.add_function(wrap_pyfunction!(sliding_window_chunker, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
