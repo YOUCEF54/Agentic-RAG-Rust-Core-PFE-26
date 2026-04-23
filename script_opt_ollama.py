@@ -130,23 +130,28 @@ def compute_pdf_hash() -> str:
     return h.hexdigest()
 
 
-def load_cache() -> dict:
+def load_cache() -> list[str]:
+    """Load cached processed filenames (backward-compatible with legacy cache formats)."""
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Deserialize back to Chunk objects
-        data["chunks"] = [
-            Chunk(text=c["text"], source=c["source"], page=c["page"], chunk_idx=c["chunk_idx"])
-            for c in data.get("chunks", [])
-        ]
-        return data
     except Exception:
-        return {}
+        return []
+
+    if isinstance(data, list):
+        return [str(x) for x in data if str(x).strip()]
+
+    if isinstance(data, dict):
+        processed = data.get("processed_files", [])
+        if isinstance(processed, list):
+            return [str(x) for x in processed if str(x).strip()]
+
+    return []
     
 def save_cache(processed_files: list[str]) -> None:
     # Save the list of filenames we have already embedded
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"processed_files": processed_files}, f)
+        json.dump({"processed_files": sorted(set(processed_files))}, f, indent=2)
 
 
 
@@ -225,12 +230,12 @@ def embed_texts_zembed(texts: list[str]) -> list[list[float]]:
 def embed_passages_local(texts: list[str]) -> list[list[float]]:
     """For indexing — uses passage: prefix."""
     prefixed = [f"passage: {t}" for t in texts]
-    return rag_rust.embed_texts_rust(prefixed, EMBED_BATCH_SIZE)
+    return rag_rust.embed_texts_rust_local(prefixed, EMBED_BATCH_SIZE)
 
 def embed_query_local(text: str) -> list[float]:
     """For retrieval — uses BGE query prefix, no passage: prefix."""
     prefixed = f"{BGE_QUERY_PREFIX}{text}"
-    return rag_rust.embed_texts_rust([prefixed], EMBED_BATCH_SIZE)[0]
+    return rag_rust.embed_texts_rust_local([prefixed], EMBED_BATCH_SIZE)[0]
 
 # --- Chunking (PDFium + Sliding Window) ---
 def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
@@ -317,7 +322,7 @@ def log_run_info() -> None:
     print(f"Chat model   : {OLLAMA_CHAT_MODEL}")
     print(f"Embed model  : {EMBED_MODEL_NAME}")
     print(f"Chunking     : PDFium + Sliding Window")
-    print(f"Embed engine : {"ZeroEntropy API (Rust)" if EMBED_MODE else "ONNX (Rust)"}")
+    print(f"Embed engine : {'ZeroEntropy API (Rust)' if EMBED_MODE else 'ONNX (Rust)'}")
     print("================")
 
 
@@ -331,7 +336,7 @@ if __name__ == "__main__":
 
     print(f"Found {len(all_pdf_paths)} PDF(s): {[Path(p).name for p in all_pdf_paths]}")
     print("Loading embed model (once)...")
-    rag_rust.load_embed_model()
+    rag_rust.load_embed_model_zembed() if EMBED_MODE else rag_rust.load_embed_model_local()
 
     current_hash = compute_pdf_hash()
     processed_files = load_cache()

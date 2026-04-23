@@ -35,28 +35,57 @@ from get_hardware_config import load_hardware_config, run_hardware_calibration
 
 APP_NAME = "Agentic-RAG-Rust-Core-PFE-26"
 
+
+def get_env_float(name: str, default: float) -> float:
+  value = os.getenv(name)
+  if value is None or not value.strip():
+    return default
+  try:
+    return float(value)
+  except ValueError as exc:
+    raise ValueError(f"Environment variable {name} must be a float, got: {value!r}") from exc
+
+
+def get_env_int(name: str, default: int) -> int:
+  value = os.getenv(name)
+  if value is None or not value.strip():
+    return default
+  try:
+    return int(value)
+  except ValueError as exc:
+    raise ValueError(f"Environment variable {name} must be an integer, got: {value!r}") from exc
+
+
+def is_truthy_env(name: str) -> bool:
+  value = os.getenv(name)
+  if value is None:
+    return False
+  return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
 # Storage / DB
 PDF_DIR = Path("data/pdfs")
 META_PATH = Path("data/metadata.json")
 DB_DIR = "lancedb"
 TABLE_NAME = "pdf_chunks"
+INDEXED_SHA_KEY = "indexed_sha256"
 
-# Embeddings (Rust fastembed)
-EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+# Embeddings (local fastembed or zembed API via Rust)
+EMBED_MODE = is_truthy_env("EMBED_MODE")
+EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or ("zembed-1" if EMBED_MODE else "BAAI/bge-small-en-v1.5")
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 # Chunking
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
-MIN_CHUNK_LEN = int(os.getenv("MIN_CHUNK_LEN", "30"))
-EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "4"))
+CHUNK_SIZE = get_env_int("CHUNK_SIZE", 1000)
+CHUNK_OVERLAP = get_env_int("CHUNK_OVERLAP", 150)
+MIN_CHUNK_LEN = get_env_int("MIN_CHUNK_LEN", 30)
+EMBED_BATCH_SIZE = get_env_int("EMBED_BATCH_SIZE", 4)
 HARDWARE_CONFIG_PATH = os.getenv("HARDWARE_CONFIG_PATH", "hardware_config.json")
 
 # Ollama
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 300)
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
-CHAT_TEMPERATURE = 0.2
+CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 
 # Per-agent models
 REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
@@ -82,6 +111,7 @@ _INDEX_INFO: Dict[str, Any] = {
   "last_error": None,
   "chunking": "markdown_semantic_v2",
   "embed_batch_size": EMBED_BATCH_SIZE,
+  "embed_engine": "zembed_api" if EMBED_MODE else "onnx_local",
   "hardware_config_mtime": None,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
@@ -153,6 +183,7 @@ class DocumentMeta(BaseModel):
   uploaded_at: Optional[str] = None
   updated_at: Optional[str] = None
   sha256: Optional[str] = None
+  indexed_sha256: Optional[str] = None
   pages: Optional[int] = None
 
 
@@ -191,6 +222,17 @@ def sha256_bytes(data: bytes) -> str:
   return hashlib.sha256(data).hexdigest()
 
 
+def sha256_file(path: Path) -> str:
+  digest = hashlib.sha256()
+  with path.open("rb") as f:
+    while True:
+      chunk = f.read(1024 * 1024)
+      if not chunk:
+        break
+      digest.update(chunk)
+  return digest.hexdigest()
+
+
 def file_stats_meta(path: Path, uploaded_at: Optional[str] = None, sha256: Optional[str] = None) -> Dict[str, Any]:
   stat = path.stat()
   updated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
@@ -212,6 +254,65 @@ def update_pages_meta(page_counts: Dict[str, int]) -> None:
     if filename not in meta:
       meta[filename] = {"filename": filename}
     meta[filename]["pages"] = pages
+  save_metadata(meta)
+
+
+def refresh_document_hashes() -> Dict[str, str]:
+  ensure_dirs()
+  meta = load_metadata()
+  hashes: Dict[str, str] = {}
+  paths = sorted(PDF_DIR.glob("*.pdf"))
+  for path in paths:
+    entry = meta.get(path.name, {})
+    uploaded_at = entry.get("uploaded_at")
+    sha256 = entry.get("sha256") or sha256_file(path)
+    base = file_stats_meta(path, uploaded_at=uploaded_at, sha256=sha256)
+    if path.name not in meta:
+      meta[path.name] = base
+    else:
+      indexed_sha = meta[path.name].get(INDEXED_SHA_KEY)
+      meta[path.name].update(base)
+      if indexed_sha is not None:
+        meta[path.name][INDEXED_SHA_KEY] = indexed_sha
+    hashes[path.name] = sha256
+  save_metadata(meta)
+  return hashes
+
+
+def select_documents_for_indexing(rebuild: bool) -> tuple[List[Path], Dict[str, str], bool, List[str]]:
+  paths = sorted(PDF_DIR.glob("*.pdf"))
+  if not paths:
+    raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
+
+  file_hashes = refresh_document_hashes()
+  meta = load_metadata()
+
+  if rebuild:
+    return paths, file_hashes, True, []
+
+  to_process: List[Path] = []
+  skipped: List[str] = []
+  for path in paths:
+    current_sha = file_hashes.get(path.name)
+    indexed_sha = (meta.get(path.name) or {}).get(INDEXED_SHA_KEY)
+    if current_sha and current_sha == indexed_sha:
+      skipped.append(path.name)
+      continue
+    to_process.append(path)
+
+  return to_process, file_hashes, False, skipped
+
+
+def mark_documents_indexed(indexed_hashes: Dict[str, str], page_counts: Dict[str, int]) -> None:
+  if not indexed_hashes and not page_counts:
+    return
+  meta = load_metadata()
+  for filename, sha256 in indexed_hashes.items():
+    if filename not in meta:
+      meta[filename] = {"filename": filename}
+    meta[filename][INDEXED_SHA_KEY] = sha256
+    if filename in page_counts:
+      meta[filename]["pages"] = page_counts[filename]
   save_metadata(meta)
 
 
