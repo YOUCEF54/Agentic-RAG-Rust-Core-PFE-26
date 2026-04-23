@@ -7,7 +7,7 @@ use pdf_oxide::ReadingOrder;
 use pdf_oxide::pipeline::converters::OutputConverter;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex}; // added Mutex
 use once_cell::sync::OnceCell;
 use arrow_array::{
     FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch,
@@ -16,16 +16,25 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::connection::CreateTableMode;
+use lancedb::query::{ExecutableQuery, QueryBase}; // not-original
 use lancedb::connect;
+use lancedb::DistanceType; // added
 use tokio::runtime::Runtime;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding}; // added
 use pyo3::exceptions::PyRuntimeError;
-use lancedb::query::{ExecutableQuery, QueryBase, Select};
-use lancedb::DistanceType;
+use reqwest::Client;
+// use reqwest::blocking::Client; // added
+use serde_json::json;
+use std::env; // added
+use dotenvy::dotenv; // added
+
 
 const MIN_CHUNK_CHARS: usize = 80;
-static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
+static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new(); // added
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
+// zembed config
+const ZE_EMBED_MODEL: &str = "zembed-1";
+const ZE_API_BASE: &str = "https://api.zeroentropy.dev";
 
 
 fn get_runtime() -> &'static Runtime {
@@ -37,6 +46,7 @@ fn get_runtime() -> &'static Runtime {
     })
 }
 
+// added (local-embed)
 fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
     EMBEDDER.get_or_try_init(|| {
         std::env::set_var("TOKENIZERS_PARALLELISM", "false");
@@ -48,15 +58,107 @@ fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
     })
 }
 
+// added (local-embed)
 #[pyfunction]
-fn load_embed_model() -> PyResult<()> {
+fn load_embed_model_local() -> PyResult<()> {
     get_embedder()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
     Ok(())
 }
 
+// changed func name from "load_embed_model_zembed" to "load_embed_model_zembed"
 #[pyfunction]
-fn embed_texts_rust(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize) -> PyResult<Vec<Vec<f32>>> {
+fn load_embed_model_zembed() -> PyResult<()> {
+    let _ = dotenvy::dotenv();
+    std::env::var("ZEROENTROPY_API_KEY").map_err(|_| {
+        PyRuntimeError::new_err(
+            "ZEROENTROPY_API_KEY environment variable is not set. Set it before calling load_embed_model_zembed().",
+        )
+    })?;
+    Ok(())
+}
+
+async fn ze_embed(
+    texts: Vec<String>,
+    input_type: &str,
+    batch_size: usize,
+    ) -> Result<Vec<Vec<f32>>, String> {
+    let _ = dotenvy::dotenv();
+    let api_key = std::env::var("ZEROENTROPY_API_KEY")
+        .map_err(|_| "ZEROENTROPY_API_KEY env var not set".to_string())?;
+
+    let client = Client::new();
+    let url = format!("{ZE_API_BASE}/v1/models/embed");
+    let mut all_embeddings = Vec::with_capacity(texts.len());
+
+    for chunk in texts.chunks(batch_size.clamp(1, 256)) {
+        let body = json!({
+            "input": chunk,
+            "input_type": input_type,
+            "model": ZE_EMBED_MODEL,
+            "encoding_format": "float"
+        });
+
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("ZeroEntropy API error {status}: {text}"));
+        }
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("JSON parse error: {e}"))?;
+
+        let results = data["results"]
+            .as_array()
+            .ok_or_else(|| format!("Missing 'results' in response: {data}"))?;
+
+        for result in results {
+            let embedding = result["embedding"]
+                .as_array()
+                .ok_or_else(|| "Missing 'embedding' field in result".to_string())?
+                .iter()
+                .map(|v| {
+                    v.as_f64()
+                        .map(|f| f as f32)
+                        .ok_or_else(|| "Non-numeric value in embedding".to_string())
+                })
+                .collect::<Result<Vec<f32>, _>>()?;
+
+            all_embeddings.push(embedding);
+        }
+    }
+
+    Ok(all_embeddings)
+}
+
+// changed func name from ""
+#[pyfunction]
+fn embed_texts_rust_zembed(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize) -> PyResult<Vec<Vec<f32>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let embeddings = py.allow_threads(|| {
+        get_runtime().block_on(ze_embed(texts, "document", embed_batch_size))
+    });
+
+    embeddings.map_err(|e| PyRuntimeError::new_err(e))
+}
+
+// added (local-embed)
+#[pyfunction]
+fn embed_texts_rust_local(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize) -> PyResult<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
@@ -76,44 +178,21 @@ fn embed_texts_rust(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize)
     embeddings.map_err(|e| PyRuntimeError::new_err(e))
 }
 
+
 #[pyfunction]
-fn smart_chunker(text: String, max_chars: usize, overlap: usize) -> PyResult<Vec<String>> {
-    let mut chunks = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let total = chars.len();
-    let mut current_pos = 0;
-
-    while current_pos < total {
-        let mut end_pos = std::cmp::min(current_pos + max_chars, total);
-        if end_pos < total {
-            let lookback_range = if end_pos > current_pos + (max_chars / 2) {
-                max_chars / 2
-            } else {
-                end_pos - current_pos
-            };
-
-            if let Some(pos) = chars[end_pos - lookback_range..end_pos]
-                .iter()
-                .rposition(|&c| c == '.' || c == '\n')
-            {
-                end_pos = (end_pos - lookback_range) + pos + 1;
-            }
-        }
-        let chunk: String = chars[current_pos..end_pos].iter().collect();
-        let trimmed = chunk.trim().to_string();
-        if !trimmed.is_empty() {
-            chunks.push(trimmed);
-        }
-        current_pos = end_pos;
-        if current_pos < total && current_pos > overlap {
-            // current_pos -= overlap;
-            let next_pos = if current_pos > overlap { current_pos - overlap } else { end_pos };
-            current_pos = std::cmp::max(next_pos, current_pos + 1); // Force forward progress
-        }
-    }
-    Ok(chunks)
+fn embed_query_rust(py: Python<'_>, query: String) -> PyResult<Vec<f32>> {
+    py.allow_threads(|| {
+        get_runtime().block_on(async {
+            let mut vecs = ze_embed(vec![query], "query", 1).await?;
+            vecs.pop().ok_or_else(|| "Empty embedding response".to_string())
+        })
+    })
+    .map_err(PyRuntimeError::new_err)
 }
 
+// deleted old chunking method "smart_chunker(...)"
+
+// this func relyes on pdf_oxide, it is outdated, try using the pdfium based new function
 #[pyfunction]
 fn load_pdf_pages_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     let mut results: Vec<(usize, Vec<String>)> = paths
@@ -133,40 +212,7 @@ fn load_pdf_pages_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     Ok(all_pages)
 }
 
-fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
-    let mut doc = PdfDocument::open(path)
-        .map_err(|e| format!("Could not open PDF: {:?}", e))?;
-
-    let config = TextPipelineConfig::default();
-    let pipeline = TextPipeline::with_config(config.clone());
-    let converter = pdf_oxide::pipeline::converters::MarkdownOutputConverter::new();
-
-    let num_pages = doc.page_count()
-        .map_err(|e| format!("Could not get page count: {:?}", e))?;
-
-    let mut pages_text = Vec::new();
-
-    for i in 0..num_pages {
-        // 1. Pass the ColumnAware parameter directly to the extraction method
-        if let Ok(spans) = doc.extract_spans_with_reading_order(i, ReadingOrder::ColumnAware) {
-            
-            // 2. The context now only needs the page number
-            let context = ReadingOrderContext::default()
-                .with_page(i as u32);
-
-            if let Ok(ordered_spans) = pipeline.process(spans, context) {
-                if let Ok(markdown) = converter.convert(&ordered_spans, &config) {
-                    let trimmed = markdown.trim().to_string();
-                    if !trimmed.is_empty() {
-                        pages_text.push(trimmed);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(pages_text)
-}
+// added
 fn is_reference_page(text: &str) -> bool {
     let non_empty_lines: Vec<&str> = text.lines()
         .map(str::trim)
@@ -187,6 +233,34 @@ fn is_reference_page(text: &str) -> bool {
 
     has_ref_header || (ref_lines * 100 / non_empty_lines.len() > 35)
 }
+
+// added
+fn is_reference_paragraph(para: &str) -> bool {
+    let lines: Vec<&str> = para.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() { return false; }
+
+    // Header line: "REFERENCES" or "References" alone
+    if lines.len() == 1 {
+        let u = lines[0].to_uppercase();
+        return u == "REFERENCES" || u == "BIBLIOGRAPHY";
+    }
+
+    let ref_lines = lines.iter().filter(|l| {
+        l.starts_with('[')
+            && l.len() > 3
+            && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+    }).count();
+
+    // >60% of lines look like "[N] Author..." → reference paragraph
+    ref_lines * 100 / lines.len() > 60
+}
+
+
+// added
 #[pyfunction]
 fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     let results: Vec<(usize, Vec<String>)> = paths
@@ -225,30 +299,7 @@ fn load_pdf_pages_pdfium_many(paths: Vec<String>) -> PyResult<Vec<String>> {
     Ok(sorted_results.into_iter().flat_map(|(_, p)| p).collect())
 }
 
-fn is_reference_paragraph(para: &str) -> bool {
-    let lines: Vec<&str> = para.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    if lines.is_empty() { return false; }
-
-    // Header line: "REFERENCES" or "References" alone
-    if lines.len() == 1 {
-        let u = lines[0].to_uppercase();
-        return u == "REFERENCES" || u == "BIBLIOGRAPHY";
-    }
-
-    let ref_lines = lines.iter().filter(|l| {
-        l.starts_with('[')
-            && l.len() > 3
-            && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
-    }).count();
-
-    // >60% of lines look like "[N] Author..." → reference paragraph
-    ref_lines * 100 / lines.len() > 60
-}
-
+// added
 fn clean_research_text(text: &str) -> String {
     let paragraphs: Vec<&str> = text.split("\n\n").collect();
 
@@ -288,6 +339,7 @@ fn clean_research_text(text: &str) -> String {
     cleaned_paragraphs.join("\n\n")
 }
 
+// added
 fn split_sentences(text: &str) -> Vec<String> {
     let abbrevs = ["dr", "mr", "mrs", "prof", "fig", "et al", "e.g", "i.e", "vs", "no", "vol"];
 
@@ -330,6 +382,7 @@ fn split_sentences(text: &str) -> Vec<String> {
     sentences
 }
 
+// added
 fn strip_academic_header(text: &str) -> &str {
     if let Some(first_break) = text.find("\n\n") {
         let first_para = &text[..first_break];
@@ -343,6 +396,44 @@ fn strip_academic_header(text: &str) -> &str {
     text
 }
 
+
+fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
+    let mut doc = PdfDocument::open(path)
+        .map_err(|e| format!("Could not open PDF: {:?}", e))?;
+
+    let config = TextPipelineConfig::default();
+    let pipeline = TextPipeline::with_config(config.clone());
+    let converter = pdf_oxide::pipeline::converters::MarkdownOutputConverter::new();
+
+    let num_pages = doc.page_count()
+        .map_err(|e| format!("Could not get page count: {:?}", e))?;
+
+    let mut pages_text = Vec::new();
+
+    for i in 0..num_pages {
+        // 1. Pass the ColumnAware parameter directly to the extraction method
+        if let Ok(spans) = doc.extract_spans_with_reading_order(i, ReadingOrder::ColumnAware) {
+            
+            // 2. The context now only needs the page number
+            let context = ReadingOrderContext::default()
+                .with_page(i as u32);
+
+            if let Ok(ordered_spans) = pipeline.process(spans, context) {
+                if let Ok(markdown) = converter.convert(&ordered_spans, &config) {
+                    let trimmed = markdown.trim().to_string();
+                    if !trimmed.is_empty() {
+                        pages_text.push(trimmed);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(pages_text)
+}
+
+
+// mod
 #[pyfunction]
 fn sliding_window_chunker(
     text:      String,
@@ -405,6 +496,8 @@ fn sliding_window_chunker(
 
     Ok(chunks)
 }
+
+// outdated
 #[pyfunction]
 fn load_pdf_pages_markdown(paths: Vec<String>) -> PyResult<Vec<String>> {
     let mut results: Vec<(usize, Vec<String>)> = paths
@@ -425,6 +518,7 @@ fn load_pdf_pages_markdown(paths: Vec<String>) -> PyResult<Vec<String>> {
     Ok(all_pages)
 }
 
+// outdated
 fn extract_markdown_from_path(path: &str) -> Result<Vec<String>, String> {
     let mut doc = PdfDocument::open(path)
         .map_err(|e| format!("Could not open PDF: {:?}", e))?;
@@ -449,6 +543,7 @@ fn extract_markdown_from_path(path: &str) -> Result<Vec<String>, String> {
     Ok(pages_md)
 }
 
+// outdated
 fn extract_page_texts_with_numbers(path: &str) -> Result<Vec<(usize, String)>, String> {
     let mut doc = PdfDocument::open(path)
         .map_err(|e| format!("Could not open PDF: {:?}", e))?;
@@ -564,6 +659,9 @@ fn extract_visual_elements(path: String, max_pages: Option<usize>) -> PyResult<V
     Ok(results)
 }
 
+// added
+
+
 // ── schema now carries source (filename) and page number ──────────────────
 fn build_batches(
     texts:   &[String],
@@ -637,7 +735,6 @@ fn build_batches(
 
     Ok(RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema))
 }
-
 // ── updated create/open — now accepts sources and pages ───────────────────
 #[pyfunction]
 fn lancedb_create_or_open(
@@ -714,6 +811,7 @@ fn lancedb_search(
         .map_err(|e| PyRuntimeError::new_err(e))
 }
 
+// mod
 fn parse_search_results(
     batches: Vec<RecordBatch>,
 ) -> Result<Vec<(String, String, i32, f32)>, String> {
@@ -779,6 +877,8 @@ fn parse_search_results(
     Ok(results)
 }
 
+// added
+
 // ── filtered search: restrict results to one source document ──────────────
 #[pyfunction]
 fn lancedb_search_filtered(
@@ -825,14 +925,21 @@ fn lancedb_search_filtered(
         .map_err(|e| PyRuntimeError::new_err(e))
 }
 
+
 #[pymodule]
 fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(load_embed_model, m)?)?;
-    m.add_function(wrap_pyfunction!(embed_texts_rust, m)?)?;
+    m.add_function(wrap_pyfunction!(load_embed_model_zembed, m)?)?;
+    m.add_function(wrap_pyfunction!(load_embed_model_local, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_texts_rust_local, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_texts_rust_zembed, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_query_rust, m)?)?;
     m.add_function(wrap_pyfunction!(sliding_window_chunker, m)?)?;
+    m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
+    m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_search_filtered, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_pdfium_many, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_visual_elements, m)?)?;
     Ok(())
 }

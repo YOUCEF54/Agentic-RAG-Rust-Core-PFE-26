@@ -47,6 +47,7 @@ profiling
 /safe
 .jpg
 .rag_cache.json
+*.md
 # Rust
 rag_rust/target/
 **/target/
