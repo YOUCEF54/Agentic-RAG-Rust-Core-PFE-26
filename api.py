@@ -51,7 +51,7 @@ TABLE_NAME = "pdf_chunks"
 # ZeroEntropy zembed API.  Leave it unset to use the local ONNX engine.
 EMBED_MODE = os.getenv("EMBED_MODE", "")          # "" → local; anything else → zembed
 
-if EMBED_MODE:
+if EMBED_MODE == True:
     EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "zembed-1")
 else:
     EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "BAAI/bge-small-en-v1.5")
@@ -94,7 +94,7 @@ _INDEX_INFO: Dict[str, Any] = {
   "chunking": "markdown_semantic_v2",
   "embed_batch_size": EMBED_BATCH_SIZE,
   "hardware_config_mtime": None,
-  "embed_mode": "zembed" if EMBED_MODE else "local",
+  "embed_mode": "zembed" if EMBED_MODE == True else "local",
   "embed_model": EMBED_MODEL_NAME,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
@@ -288,7 +288,7 @@ def ensure_embed_model_loaded() -> None:
   """Load the embedding model exactly once, routing to the correct engine."""
   global _EMBED_MODEL_READY
   if not _EMBED_MODEL_READY:
-    if EMBED_MODE:
+    if EMBED_MODE == True:
       rag_rust.load_embed_model_zembed()
     else:
       rag_rust.load_embed_model_local()
@@ -303,7 +303,7 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
   """
   refresh_hardware_config_if_needed(force=False)
   ensure_embed_model_loaded()
-  if EMBED_MODE:
+  if EMBED_MODE == True:
     return rag_rust.embed_texts_rust_zembed(texts, _ACTIVE_EMBED_BATCH_SIZE)
   else:
     prefixed = [f"passage: {t}" for t in texts]
@@ -317,7 +317,7 @@ def embed_query(query: str) -> List[float]:
   - local   : prepends BGE query prefix and calls rag_rust.embed_texts_rust_local
   """
   ensure_embed_model_loaded()
-  if EMBED_MODE:
+  if EMBED_MODE == True:
     return rag_rust.embed_query_rust_zembed(query)
   else:
     prefixed = f"{BGE_QUERY_PREFIX}{query}"
@@ -395,7 +395,7 @@ def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
     "rebuild": rebuild,
     "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
-    "embed_mode": "zembed" if EMBED_MODE else "local",
+    "embed_mode": "zembed" if EMBED_MODE == True else "local",
     "embed_model": EMBED_MODEL_NAME,
   }
 
@@ -451,7 +451,7 @@ def run_index(
       "chunks": stats.get("chunks"),
       "chunking": stats.get("chunking"),
       "embed_batch_size": stats.get("embed_batch_size"),
-      "embed_mode": "zembed" if EMBED_MODE else "local",
+      "embed_mode": "zembed" if EMBED_MODE == True else "local",
       "embed_model": EMBED_MODEL_NAME,
     }
   )
@@ -503,7 +503,7 @@ def health():
     "chunking": "markdown_semantic_v2",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
-    "embed_mode": "zembed" if EMBED_MODE else "local",
+    "embed_mode": "zembed" if EMBED_MODE == True else "local",
     "embed_model": EMBED_MODEL_NAME,
   }
 
@@ -569,7 +569,7 @@ def clear_index() -> None:
       "last_error": None,
       "chunking": "markdown_semantic_v2",
       "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
-      "embed_mode": "zembed" if EMBED_MODE else "local",
+      "embed_mode": "zembed" if EMBED_MODE == True else "local",
       "embed_model": EMBED_MODEL_NAME,
     }
   )
