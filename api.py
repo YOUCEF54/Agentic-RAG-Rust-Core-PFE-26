@@ -36,10 +36,9 @@ from pydantic import BaseModel
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 from get_hardware_config import load_hardware_config, run_hardware_calibration
-from dotenv import load_dotenv
 
 APP_NAME = "Agentic-RAG-Rust-Core-PFE-26"
-load_dotenv()
+
 # Storage / DB
 PDF_DIR = Path("data/pdfs")
 META_PATH = Path("data/metadata.json")
@@ -66,14 +65,11 @@ MIN_CHUNK_LEN = int(os.getenv("MIN_CHUNK_LEN", "30"))
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "4"))
 HARDWARE_CONFIG_PATH = os.getenv("HARDWARE_CONFIG_PATH", "hardware_config.json")
 
-# OpenRouter
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "")
-OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", APP_NAME)
-OPENROUTER_TIMEOUT = 60
-OPENROUTER_CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openrouter/free")
-CHAT_TEMPERATURE = 0.2
+# Ollama
+OLLAMA_BASE_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
+OLLAMA_TIMEOUT    = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "mistral")
+CHAT_TEMPERATURE  = float(os.getenv("CHAT_TEMPERATURE", "0.2"))
 
 # DPS (Dynamic Passage Selection)
 DPS_ENABLED     = True
@@ -460,38 +456,39 @@ def run_index(
   return stats
 
 
-def openrouter_headers() -> dict:
-  if not OPENROUTER_API_KEY:
-    raise HTTPException(status_code=400, detail="OPENROUTER_API_KEY is not set.")
-  key = OPENROUTER_API_KEY.strip().replace('"', "").replace("'", "")
-  headers = {
-    "Authorization": f"Bearer {key}",
-    "Content-Type": "application/json",
-  }
-  if OPENROUTER_HTTP_REFERER:
-    headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
-  if OPENROUTER_TITLE:
-    headers["X-Title"] = OPENROUTER_TITLE
-  return headers
+def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
+  """POST to the local Ollama API with automatic retry on connection errors."""
+  for attempt in range(retries):
+    try:
+      url = f"{OLLAMA_BASE_URL}{path}"
+      resp = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
+      if resp.ok:
+        return resp.json()
+      try:
+        detail = resp.json()
+      except Exception:
+        detail = resp.text
+      raise HTTPException(status_code=resp.status_code, detail=f"Ollama error: {detail}")
+    except requests.exceptions.ConnectionError:
+      if attempt < retries - 1:
+        time.sleep(2)
+      else:
+        raise HTTPException(status_code=503, detail="Cannot reach Ollama. Is it running on localhost:11434?")
+  return {}
 
 
-def openrouter_chat(messages: List[dict], model_override: Optional[str]) -> tuple[str, Optional[str]]:
+def ollama_chat(messages: List[dict], model_override: Optional[str]) -> tuple[str, Optional[str]]:
+  """Chat via local Ollama."""
+  model = model_override or OLLAMA_CHAT_MODEL
   payload = {
-    "model": model_override or OPENROUTER_CHAT_MODEL,
+    "model": model,
     "messages": messages,
-    "temperature": CHAT_TEMPERATURE,
+    "stream": False,
+    "options": {"temperature": CHAT_TEMPERATURE},
   }
-  resp = requests.post(
-    f"{OPENROUTER_BASE_URL}/chat/completions",
-    json=payload,
-    headers=openrouter_headers(),
-    timeout=OPENROUTER_TIMEOUT,
-  )
-  if not resp.ok:
-    raise HTTPException(status_code=resp.status_code, detail=resp.text)
-  data = resp.json()
-  content = data["choices"][0]["message"]["content"]
-  model_used = data.get("model") or data.get("choices", [{}])[0].get("model")
+  data = ollama_post("/chat", payload)
+  content = data.get("message", {}).get("content", "")
+  model_used = data.get("model", model)
   return content, model_used
 
 
@@ -698,7 +695,7 @@ def query(payload: QueryRequest):
       "Don't make up any new information:\n"
       f"{context_text}"
     )
-    answer, model_used = openrouter_chat(
+    answer, model_used = ollama_chat(
       [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": payload.question},
@@ -725,7 +722,7 @@ def query(payload: QueryRequest):
     state["retrieved_meta"] = meta
     return hits
 
-  chat_fn = lambda messages: openrouter_chat(messages, payload.chat_model)
+  chat_fn = lambda messages: ollama_chat(messages, payload.chat_model)
   refiner = QueryRefiner(chat_fn=chat_fn)
   retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
   selector = DynamicPassageSelector(
@@ -801,7 +798,7 @@ def query_stream(payload: QueryRequest):
         "Don't make up any new information:\n"
         f"{context_text}"
       )
-      answer, model_used = openrouter_chat(
+      answer, model_used = ollama_chat(
         [
           {"role": "system", "content": system_prompt},
           {"role": "user", "content": payload.question},
@@ -839,7 +836,7 @@ def query_stream(payload: QueryRequest):
       state["retrieved_meta"] = meta
       return hits
 
-    chat_fn = lambda messages: openrouter_chat(messages, payload.chat_model)
+    chat_fn = lambda messages: ollama_chat(messages, payload.chat_model)
     refiner = QueryRefiner(chat_fn=chat_fn)
     retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
     selector = DynamicPassageSelector(
