@@ -2,20 +2,24 @@
 
 Run:
   uvicorn api:app --reload
+
+Embedding engines (controlled by EMBED_MODE env var):
+  - EMBED_MODE is set (any truthy value)  → ZeroEntropy zembed API (Rust)
+  - EMBED_MODE is unset / empty           → Local ONNX (BAAI/bge-small-en-v1.5, Rust fastembed)
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-os.environ["OMP_NUM_THREADS"] = "4"        
+os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["MKL_NUM_THREADS"] = "4"
 os.environ["OPENBLAS_NUM_THREADS"] = "4"
 os.environ["VECLIB_MAX_THREADS"] = "4"
 os.environ["NUMEXPR_NUM_THREADS"] = "4"
 
 # Désactive les flags de télémétrie ONNX qui peuvent ralentir l'initialisation
-os.environ["ONNXRUNTIME_FLAGS"] = "0" 
+os.environ["ONNXRUNTIME_FLAGS"] = "0"
 # ----------------------------------------
 import re
 import shutil
@@ -32,18 +36,28 @@ from pydantic import BaseModel
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 from get_hardware_config import load_hardware_config, run_hardware_calibration
+from dotenv import load_dotenv
 
 APP_NAME = "Agentic-RAG-Rust-Core-PFE-26"
-
+load_dotenv()
 # Storage / DB
 PDF_DIR = Path("data/pdfs")
 META_PATH = Path("data/metadata.json")
 DB_DIR = "lancedb"
 TABLE_NAME = "pdf_chunks"
 
-# Embeddings (Rust fastembed)
-EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+# ── Embedding engine selection ────────────────────────────────────────────────
+# Set EMBED_MODE to any non-empty value (e.g. "zembed" or "1") to use the
+# ZeroEntropy zembed API.  Leave it unset to use the local ONNX engine.
+EMBED_MODE = os.getenv("EMBED_MODE", "")          # "" → local; anything else → zembed
+
+if EMBED_MODE:
+    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "zembed-1")
+else:
+    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Chunking
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
@@ -80,6 +94,8 @@ _INDEX_INFO: Dict[str, Any] = {
   "chunking": "markdown_semantic_v2",
   "embed_batch_size": EMBED_BATCH_SIZE,
   "hardware_config_mtime": None,
+  "embed_mode": "zembed" if EMBED_MODE else "local",
+  "embed_model": EMBED_MODEL_NAME,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 _EMBED_MODEL_READY = False
@@ -87,7 +103,6 @@ _ACTIVE_EMBED_BATCH_SIZE = EMBED_BATCH_SIZE
 _HARDWARE_CONFIG_MTIME: Optional[float] = None
 
 # CORS (frontend integration)
-# _cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
 _cors_allow_all = True
 _cors_origins = os.getenv("CORS_ORIGINS", "")
 if _cors_allow_all:
@@ -267,26 +282,48 @@ def refresh_hardware_config_if_needed(force: bool = False) -> Optional[Dict[str,
 refresh_hardware_config_if_needed(force=True)
 
 
+# ── Embedding helpers (dual-engine) ──────────────────────────────────────────
+
 def ensure_embed_model_loaded() -> None:
+  """Load the embedding model exactly once, routing to the correct engine."""
   global _EMBED_MODEL_READY
   if not _EMBED_MODEL_READY:
-    rag_rust.load_embed_model()
+    if EMBED_MODE:
+      rag_rust.load_embed_model_zembed()
+    else:
+      rag_rust.load_embed_model_local()
     _EMBED_MODEL_READY = True
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-  """Embed indexed passages via Rust fastembed (BGE expects 'passage:' prefix)."""
+  """Embed indexed passages, routing to zembed or local ONNX based on EMBED_MODE.
+
+  - zembed  : calls rag_rust.embed_texts_rust_zembed (no prefix needed)
+  - local   : prepends 'passage: ' prefix and calls rag_rust.embed_texts_rust_local
+  """
   refresh_hardware_config_if_needed(force=False)
   ensure_embed_model_loaded()
-  prefixed_texts = [f"passage: {t}" for t in texts]
-  return rag_rust.embed_texts_rust(prefixed_texts, _ACTIVE_EMBED_BATCH_SIZE)
+  if EMBED_MODE:
+    return rag_rust.embed_texts_rust_zembed(texts, _ACTIVE_EMBED_BATCH_SIZE)
+  else:
+    prefixed = [f"passage: {t}" for t in texts]
+    return rag_rust.embed_texts_rust_local(prefixed, _ACTIVE_EMBED_BATCH_SIZE)
 
 
 def embed_query(query: str) -> List[float]:
-  """Embed query via Rust fastembed with BGE query prefix."""
+  """Embed a retrieval query, routing to zembed or local ONNX based on EMBED_MODE.
+
+  - zembed  : calls rag_rust.embed_query_rust_zembed
+  - local   : prepends BGE query prefix and calls rag_rust.embed_texts_rust_local
+  """
   ensure_embed_model_loaded()
-  prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
-  return rag_rust.embed_texts_rust([prefixed_query], 1)[0]
+  if EMBED_MODE:
+    return rag_rust.embed_query_rust_zembed(query)
+  else:
+    prefixed = f"{BGE_QUERY_PREFIX}{query}"
+    return rag_rust.embed_texts_rust_local([prefixed], 1)[0]
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str], List[int], Dict[str, int]]:
@@ -358,6 +395,8 @@ def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
     "rebuild": rebuild,
     "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+    "embed_mode": "zembed" if EMBED_MODE else "local",
+    "embed_model": EMBED_MODEL_NAME,
   }
 
 
@@ -412,6 +451,8 @@ def run_index(
       "chunks": stats.get("chunks"),
       "chunking": stats.get("chunking"),
       "embed_batch_size": stats.get("embed_batch_size"),
+      "embed_mode": "zembed" if EMBED_MODE else "local",
+      "embed_model": EMBED_MODEL_NAME,
     }
   )
   _INDEX_STATUS = "ready"
@@ -462,6 +503,8 @@ def health():
     "chunking": "markdown_semantic_v2",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
+    "embed_mode": "zembed" if EMBED_MODE else "local",
+    "embed_model": EMBED_MODEL_NAME,
   }
 
 
@@ -526,6 +569,8 @@ def clear_index() -> None:
       "last_error": None,
       "chunking": "markdown_semantic_v2",
       "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+      "embed_mode": "zembed" if EMBED_MODE else "local",
+      "embed_model": EMBED_MODEL_NAME,
     }
   )
 

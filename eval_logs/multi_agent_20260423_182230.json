@@ -1,0 +1,217 @@
+{
+  "run_timestamp": "20260423_182230",
+  "papers": [
+    {
+      "pdf_path": "pdfs/qasper_paper_1.pdf",
+      "paper_title": "Cross-lingual Pre-training Based Transfer for Zero-shot Neural Machine Translation",
+      "results": [
+        {
+          "pdf_path": "pdfs/qasper_paper_1.pdf",
+          "paper_title": "Cross-lingual Pre-training Based Transfer for Zero-shot Neural Machine Translation",
+          "question_index": 1,
+          "question": "which multilingual approaches do they compare with?",
+          "ground_truth": "BIBREF19, BIBREF20",
+          "refined_query": "Compare which multilingual approaches are being compared in the study?",
+          "rag_answer": " The study compares several multilingual approaches, including:\n1. Pivoting (a method that translates source to pivot then to target in two steps)\n2. Multilingual NMT (MNMT) - a method mentioned in BIBREF19\n3. Cross-lingual transfer without pretraining - a method mentioned in BIBREF16\n4. The authors' own approaches, which involve monolingual and bilingual pre-training methods to create a universal encoder for different languages.",
+          "attempts": 1,
+          "elapsed_seconds": 38.86,
+          "retrieval_score": 192.0,
+          "generation_score": 0.9
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_1.pdf",
+          "paper_title": "Cross-lingual Pre-training Based Transfer for Zero-shot Neural Machine Translation",
+          "question_index": 2,
+          "question": "what are the pivot-based baselines?",
+          "ground_truth": "pivoting, pivoting$_{\\rm m}$",
+          "refined_query": "\"What are the pivot-based benchmarks or reference points?\"",
+          "rag_answer": " The context does not provide specific names for the pivot-based benchmarks or reference points mentioned in the paper. However, it does mention that the pivot-based method is further divided into pivoting and pivot-synthetic, and it uses examples such as BIBREF4, BIBREF5, BIBREF12, BIBREF13, and BIBREF14 which could potentially be related to these benchmarks or reference points. Without additional context or information, it is not possible to determine the exact names of these benchmarks or reference points.",
+          "attempts": 1,
+          "elapsed_seconds": 39.99,
+          "retrieval_score": 9.5,
+          "generation_score": 0.7
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_1.pdf",
+          "paper_title": "Cross-lingual Pre-training Based Transfer for Zero-shot Neural Machine Translation",
+          "question_index": 3,
+          "question": "which datasets did they experiment with?",
+          "ground_truth": "Europarl, MultiUN",
+          "refined_query": "Experimented datasets: What datasets were used in the experiments?",
+          "rag_answer": " The experiments used several datasets, primarily focused on E-commerce (EC) and translation tasks. In the E-commerce domain, they collected sentences from titles of merchandise entries (EC-MT) and user queries (EC-UQ). For labeling entities such as Brand, Product, Model, Material, and Specification, they used 1,000 sentences as a development set and the remaining 700 as the test set. The rest of the sentences with only student annotations were used as the training set.\n\nFor translation tasks, they used devtest2006 as the validation set and the test2006 for Fr$\\rightarrow $Es and De$\\rightarrow $Fr. For the distant language pair Ro$\\rightarrow $De, they extracted 1,000 overlapping sentences from newstest2016 as the test set and 2,000 overlapping sentences split from the training set as the validation set.\n\nFor a multi-language corpus (MultiUN), they used four languages: English (En) as the pivot language, which has parallel data with other three languages that do not have parallel data between each other. The statistics of Europarl and MultiUN corpora are summarized in Table TABREF18.",
+          "attempts": 1,
+          "elapsed_seconds": 55.22,
+          "retrieval_score": 9.5,
+          "generation_score": 0.9
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_1.pdf",
+          "paper_title": "Cross-lingual Pre-training Based Transfer for Zero-shot Neural Machine Translation",
+          "question_index": 4,
+          "question": "what language pairs are explored?",
+          "ground_truth": "De-En, En-Fr, Fr-En, En-Es, Ro-En, En-De, Ar-En, En-Ru",
+          "refined_query": "\"Which language combinations are investigated?\"",
+          "rag_answer": " The document mentions that the MultiUN corpus uses four languages: English (En), Arabic (Ar), Spanish (Es), and Russian (Ru). For evaluation, there are six zero-shot translation directions due to mutual translations between these three languages that don't have parallel data with each other. However, for a more complicated scenario involving multiple languages on either the source or target side, it is stated that the encoder and decoder are shared across each side language, but specific language combinations for this scenario are not explicitly provided in the given context.",
+          "attempts": 1,
+          "elapsed_seconds": 42.05,
+          "retrieval_score": 0.0,
+          "generation_score": 0.7
+        }
+      ]
+    },
+    {
+      "pdf_path": "pdfs/qasper_paper_2.pdf",
+      "paper_title": "pioNER: Datasets and Baselines for Armenian Named Entity Recognition",
+      "results": [
+        {
+          "pdf_path": "pdfs/qasper_paper_2.pdf",
+          "paper_title": "pioNER: Datasets and Baselines for Armenian Named Entity Recognition",
+          "question_index": 1,
+          "question": "what ner models were evaluated?",
+          "ground_truth": "Stanford NER, spaCy 2.0 , recurrent model with a CRF top layer",
+          "refined_query": "\"Which neural network models were assessed during the evaluation process?\"",
+          "rag_answer": " The neural network models that were assessed during the evaluation process are LSTM-CRF, CRF, CRF-VT, and LSTM-CRF-VT.",
+          "attempts": 1,
+          "elapsed_seconds": 34.93,
+          "retrieval_score": 952.0,
+          "generation_score": 0.3
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_2.pdf",
+          "paper_title": "pioNER: Datasets and Baselines for Armenian Named Entity Recognition",
+          "question_index": 2,
+          "question": "what is the source of the news sentences?",
+          "ground_truth": "ilur.am",
+          "refined_query": "Source of news sentences from which news outlets or articles?",
+          "rag_answer": " The news sentences in the dataset were selected from over 250 news texts from ilur.am.",
+          "attempts": 1,
+          "elapsed_seconds": 33.33,
+          "retrieval_score": 1.0,
+          "generation_score": 1.0
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_2.pdf",
+          "paper_title": "pioNER: Datasets and Baselines for Armenian Named Entity Recognition",
+          "question_index": 3,
+          "question": "did they use a crowdsourcing platform for manual annotations?",
+          "ground_truth": "False",
+          "refined_query": "\"Was a crowdsourcing platform utilized for performing manual annotations in the project?\"",
+          "rag_answer": " Yes, a crowdsourcing platform was utilized for performing manual annotations in the project. The context mentions that each sentence is assigned to three annotators, indicating that these annotations were performed by crowd-workers or students.",
+          "attempts": 1,
+          "elapsed_seconds": 36.29,
+          "retrieval_score": 0.1,
+          "generation_score": 0.2
+        }
+      ]
+    },
+    {
+      "pdf_path": "pdfs/qasper_paper_3.pdf",
+      "paper_title": "Identifying Dogmatism in Social Media: Signals and Models",
+      "results": [
+        {
+          "pdf_path": "pdfs/qasper_paper_3.pdf",
+          "paper_title": "Identifying Dogmatism in Social Media: Signals and Models",
+          "question_index": 1,
+          "question": "what are the topics pulled from Reddit?",
+          "ground_truth": "politics, business, science, and AskReddit, and 1000 additional posts from the Reddit frontpage. ",
+          "refined_query": "Topics retrieved from Reddit: Specific subreddits or categories of interest?",
+          "rag_answer": " The document discusses specific subreddits or categories of interest on Reddit that were sampled for data collection and analysis of dogmatism levels. These include politics, business, science, AskReddit, the Reddit frontpage, Libertarianism, Anarcho_Capitalism, ronpaul, ukpolitics, guns, economy, Bitcoin, socialism, technology, UpliftingNews, photoshopbattles, firstworldanarchist, millionairemakers, IAmA, and AskReddit. However, it does not provide information about other potential topics or categories that might be of interest in analyzing dogmatism on Reddit.",
+          "attempts": 1,
+          "elapsed_seconds": 48.46,
+          "retrieval_score": 9.5,
+          "generation_score": 0.8
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_3.pdf",
+          "paper_title": "Identifying Dogmatism in Social Media: Signals and Models",
+          "question_index": 2,
+          "question": "What predictive model do they build?",
+          "ground_truth": "logistic regression models",
+          "refined_query": "\"Which specific predictive model is being constructed by them?\"",
+          "rag_answer": " The document describes the construction of several predictive models. One of these models is the LSTM-Crowd model, which is based on the LSTM-CRF model with crowd annotation learning as proposed by BIBREF4 (nguyen2017aggregating). This model uses a common Bi-LSTM and a convolutional neural network (CNN) for worker classification. The loss function for this model is minimized using standard back-propagation.",
+          "attempts": 1,
+          "elapsed_seconds": 48.14,
+          "retrieval_score": 0.9,
+          "generation_score": 0.7
+        }
+      ]
+    },
+    {
+      "pdf_path": "pdfs/qasper_paper_4.pdf",
+      "paper_title": "Adversarial Learning for Chinese NER from Crowd Annotations",
+      "results": [
+        {
+          "pdf_path": "pdfs/qasper_paper_4.pdf",
+          "paper_title": "Adversarial Learning for Chinese NER from Crowd Annotations",
+          "question_index": 1,
+          "question": "What accuracy does the proposed system achieve?",
+          "ground_truth": "F1 scores of 85.99 on the DL-PS data,  75.15 on the EC-MT data and 71.53 on the EC-UQ data ",
+          "refined_query": "\"What is the reported precision or accuracy of the proposed system?\"",
+          "rag_answer": " The document does not contain information about the reported precision or accuracy of the proposed system directly. However, it does mention that the highest F1 score was achieved by a recurrent model using specific parameters (batch size of 8, Adam optimizer with an initial learning rate of 0.001, and updating word embeddings during training) on the manually annotated gold dataset in Chunk 1. F1 score is a metric that combines precision and recall, so it can provide some indication of the model's performance.\n\nIn Chunk 2, there are no specific mentions of the precision or accuracy of the proposed system (ALCrowd). However, the experimental results on the DL-PS datasets and EC-MT/EC-UQ datasets are presented for comparison purposes. To find the exact precision or accuracy values, you may need to look for additional resources or documents that provide these details.",
+          "attempts": 1,
+          "elapsed_seconds": 48.54,
+          "retrieval_score": 185997515715.3,
+          "generation_score": 0.7
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_4.pdf",
+          "paper_title": "Adversarial Learning for Chinese NER from Crowd Annotations",
+          "question_index": 2,
+          "question": "What crowdsourcing platform is used?",
+          "ground_truth": "Unknown",
+          "refined_query": "Which specific crowdsourcing platform is being utilized?",
+          "rag_answer": " The document does not provide information about which specific crowdsourcing platform is being utilized in the context provided.",
+          "attempts": 3,
+          "elapsed_seconds": 77.8,
+          "retrieval_score": 0.6,
+          "generation_score": 0.3
+        }
+      ]
+    },
+    {
+      "pdf_path": "pdfs/qasper_paper_5.pdf",
+      "paper_title": "Addressing word-order Divergence in Multilingual Neural Machine Translation for extremely Low Resource Languages",
+      "results": [
+        {
+          "pdf_path": "pdfs/qasper_paper_5.pdf",
+          "paper_title": "Addressing word-order Divergence in Multilingual Neural Machine Translation for extremely Low Resource Languages",
+          "question_index": 1,
+          "question": "How do they match words before reordering them?",
+          "ground_truth": "Unknown",
+          "refined_query": "\"What algorithm or process is used to compare and arrange words in a specific order prior to matching?\"",
+          "rag_answer": " The document describes a process called \"pre-ordering\" that is used to compare and arrange words in a specific order prior to matching. This process is applied to the source language sentences to match the target language word order, particularly in scenarios where the assisting language has SVO word order and the source language has SOV word order. The pre-ordering rule swaps the position of the noun phrase followed by a transitive verb with the transitive verb.",
+          "attempts": 1,
+          "elapsed_seconds": 43.12,
+          "retrieval_score": 0.9,
+          "generation_score": 0.7
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_5.pdf",
+          "paper_title": "Addressing word-order Divergence in Multilingual Neural Machine Translation for extremely Low Resource Languages",
+          "question_index": 2,
+          "question": "On how many language pairs do they show that preordering assisting language sentences helps translation quality?",
+          "ground_truth": "5",
+          "refined_query": "How many language pairs does the data demonstrate an improvement in translation quality when using pre-ordered assisting language sentences?",
+          "rag_answer": " The document demonstrates improvements in translation quality for multiple language pairs when using pre-ordered assisting language sentences.",
+          "attempts": 1,
+          "elapsed_seconds": 34.2,
+          "retrieval_score": 1.0,
+          "generation_score": 1.0
+        },
+        {
+          "pdf_path": "pdfs/qasper_paper_5.pdf",
+          "paper_title": "Addressing word-order Divergence in Multilingual Neural Machine Translation for extremely Low Resource Languages",
+          "question_index": 3,
+          "question": "Which dataset(s) do they experiment with?",
+          "ground_truth": "IITB English-Hindi parallel corpus BIBREF22, ILCI English-Hindi parallel corpus",
+          "refined_query": "What datasets were used in their experiments?",
+          "rag_answer": " The experiments used several datasets. In the E-commerce domain (EC), they collected raw sentences from titles of merchandise entries (EC-MT) and user queries (EC-UQ). They labeled five types of entities: Brand, Product, Model, Material, and Specification. For a named entities dataset, they manually annotated 2566 sentences from over 250 news texts from ilur.am, covering popular named entity classes: people (PER), organizations (ORG), and locations (LOC). Lastly, for the MultiUN corpus, they used four languages: English (En) as the pivot language, which has parallel data with other three languages that do not have parallel data between each other.",
+          "attempts": 1,
+          "elapsed_seconds": 48.6,
+          "retrieval_score": 2.2,
+          "generation_score": 0.7
+        }
+      ]
+    }
+  ]
+}

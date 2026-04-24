@@ -24,6 +24,9 @@ from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, Dyn
 
 import rag_rust
 
+
+load_dotenv()
+
 # FIXED — return Chunk objects
 
 @dataclass
@@ -76,6 +79,7 @@ else:
 
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 TOP_K = get_env_int("TOP_K", 3)
+
 
 # added
 # --- DPS Config ---
@@ -159,7 +163,7 @@ def save_cache(processed_files: list[str]) -> None:
 #     with open(CACHE_FILE, "w", encoding="utf-8") as f:
 #         json.dump({"hash": pdf_hash, "chunks": chunks}, f)
 
-
+  
 # --- Ollama ---
 
 def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
@@ -210,10 +214,15 @@ def ollama_chat(model: str, messages: list[dict]) -> tuple[str, str | None]:
     data = ollama_post("/chat", payload)
     return data.get("message", {}).get("content", ""), data.get("model")
 
-REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
-EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
-SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
+#REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
+#GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
+#EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
+#SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
+
+REFINER_MODEL   = os.getenv("REFINER_MODEL",   "mistral")
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "mistral")
+EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "mistral")
+SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "mistral")
 
 chat_refiner   = lambda msgs: ollama_chat(REFINER_MODEL,   msgs)
 chat_generator = lambda msgs: ollama_chat(GENERATOR_MODEL, msgs)
@@ -309,7 +318,11 @@ def build_or_open_table(chunks: list[Chunk], overwrite: bool) -> None:
 # --- Retrieval ---
 
 def retrieve(query: str, top_k: int = TOP_K, source_filter: str | None = None):
-    qvec = embed_query_local(query)   
+    if EMBED_MODE: 
+        qvec = rag_rust.embed_query_rust_zembed(query)
+    else:
+        qvec = embed_query_local(query)   
+
     if source_filter:
         return rag_rust.lancedb_search_filtered(DB_DIR, TABLE_NAME, qvec, top_k, source_filter)
     return rag_rust.lancedb_search(DB_DIR, TABLE_NAME, qvec, top_k)
@@ -336,7 +349,10 @@ if __name__ == "__main__":
 
     print(f"Found {len(all_pdf_paths)} PDF(s): {[Path(p).name for p in all_pdf_paths]}")
     print("Loading embed model (once)...")
-    rag_rust.load_embed_model_zembed() if EMBED_MODE else rag_rust.load_embed_model_local()
+    if EMBED_MODE:
+        rag_rust.load_embed_model_zembed() 
+    else :
+        rag_rust.load_embed_model_local()
 
     current_hash = compute_pdf_hash()
     processed_files = load_cache()
