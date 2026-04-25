@@ -91,7 +91,7 @@ _INDEX_INFO: Dict[str, Any] = {
   "pages": None,
   "chunks": None,
   "last_error": None,
-  "chunking": "markdown_semantic_v2",
+  "chunking": "pdfium_sliding_window",
   "embed_batch_size": EMBED_BATCH_SIZE,
   "hardware_config_mtime": None,
   "embed_mode": "zembed" if EMBED_MODE == True else "local",
@@ -500,7 +500,7 @@ def health():
   refresh_hardware_config_if_needed(force=False)
   return {
     "status": "ok",
-    "chunking": "markdown_semantic_v2",
+    "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
     "embed_mode": "zembed" if EMBED_MODE == True else "local",
@@ -567,7 +567,7 @@ def clear_index() -> None:
       "last_build_ms": None,
       "last_build_at": None,
       "last_error": None,
-      "chunking": "markdown_semantic_v2",
+      "chunking": "pdfium_sliding_window",
       "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
       "embed_mode": "zembed" if EMBED_MODE == True else "local",
       "embed_model": EMBED_MODEL_NAME,

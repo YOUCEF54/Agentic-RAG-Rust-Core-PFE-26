@@ -109,7 +109,7 @@ _INDEX_INFO: Dict[str, Any] = {
   "pages": None,
   "chunks": None,
   "last_error": None,
-  "chunking": "markdown_semantic_v2",
+  "chunking": "pdfium_sliding_window",
   "embed_batch_size": EMBED_BATCH_SIZE,
   "embed_engine": "zembed_api" if EMBED_MODE else "onnx_local",
   "hardware_config_mtime": None,
@@ -374,23 +374,27 @@ refresh_hardware_config_if_needed(force=True)
 def ensure_embed_model_loaded() -> None:
   global _EMBED_MODEL_READY
   if not _EMBED_MODEL_READY:
-    rag_rust.load_embed_model()
+    rag_rust.load_embed_model_zembed() if EMBED_MODE else rag_rust.load_embed_model_local()
     _EMBED_MODEL_READY = True
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-  """Embed indexed passages via Rust fastembed (BGE expects 'passage:' prefix)."""
+  """Embed indexed passages using configured embedding backend."""
   refresh_hardware_config_if_needed(force=False)
   ensure_embed_model_loaded()
+  if EMBED_MODE:
+    return rag_rust.embed_texts_rust_zembed(texts, _ACTIVE_EMBED_BATCH_SIZE)
   prefixed_texts = [f"passage: {t}" for t in texts]
-  return rag_rust.embed_texts_rust(prefixed_texts, _ACTIVE_EMBED_BATCH_SIZE)
+  return rag_rust.embed_texts_rust_local(prefixed_texts, _ACTIVE_EMBED_BATCH_SIZE)
 
 
 def embed_query(query: str) -> List[float]:
-  """Embed query via Rust fastembed with BGE query prefix."""
+  """Embed query using configured embedding backend."""
   ensure_embed_model_loaded()
+  if EMBED_MODE:
+    return rag_rust.embed_texts_rust_zembed([query], _ACTIVE_EMBED_BATCH_SIZE)[0]
   prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
-  return rag_rust.embed_texts_rust([prefixed_query], 1)[0]
+  return rag_rust.embed_texts_rust_local([prefixed_query], _ACTIVE_EMBED_BATCH_SIZE)[0]
 
 
 def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str], List[int], Dict[str, int]]:
@@ -567,7 +571,7 @@ def health():
   refresh_hardware_config_if_needed(force=False)
   return {
     "status": "ok",
-    "chunking": "markdown_semantic_v2",
+    "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
   }
@@ -632,7 +636,7 @@ def clear_index() -> None:
       "last_build_ms": None,
       "last_build_at": None,
       "last_error": None,
-      "chunking": "markdown_semantic_v2",
+      "chunking": "pdfium_sliding_window",
       "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     }
   )
