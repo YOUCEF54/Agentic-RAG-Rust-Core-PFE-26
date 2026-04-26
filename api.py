@@ -33,6 +33,22 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+# Bootstrap the pyo3 extension on Windows when the repo contains the built DLL
+# but the Python importable .pyd isn't present yet.
+_RAG_RUST_PYD = Path(__file__).with_name("rag_rust.pyd")
+if not _RAG_RUST_PYD.exists():
+  for _dll in (
+    Path("rag_rust/target/release/rag_rust.dll"),
+    Path("rag_rust/target/maturin/rag_rust.dll"),
+  ):
+    if _dll.exists():
+      try:
+        shutil.copyfile(_dll, _RAG_RUST_PYD)
+      except Exception:
+        pass
+      break
+
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 from get_hardware_config import load_hardware_config, run_hardware_calibration
@@ -47,14 +63,22 @@ DB_DIR = "lancedb"
 TABLE_NAME = "pdf_chunks"
 
 # ── Embedding engine selection ────────────────────────────────────────────────
-# Set EMBED_MODE to any non-empty value (e.g. "zembed" or "1") to use the
-# ZeroEntropy zembed API.  Leave it unset to use the local ONNX engine.
-EMBED_MODE = os.getenv("EMBED_MODE", "")          # "" → local; anything else → zembed
+def _truthy_env(name: str) -> bool:
+  """Parse env vars like '1', 'true', 'yes', 'on', 'zembed' as True."""
+  val = os.getenv(name)
+  if val is None:
+    return False
+  return val.strip().lower() in ("1", "true", "yes", "y", "on", "zembed")
 
-if EMBED_MODE == True:
-    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "zembed-1")
-else:
-    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+
+# Set EMBED_MODE to a truthy value (e.g. "zembed" or "1") to use the
+# ZeroEntropy zembed API. Leave it unset/empty to use the local ONNX engine.
+EMBED_MODE = _truthy_env("EMBED_MODE")
+
+EMBED_MODEL_NAME = os.getenv(
+  "EMBED_MODEL_NAME",
+  "zembed-1" if EMBED_MODE else "BAAI/bge-small-en-v1.5",
+)
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,7 +118,7 @@ _INDEX_INFO: Dict[str, Any] = {
   "chunking": "pdfium_sliding_window",
   "embed_batch_size": EMBED_BATCH_SIZE,
   "hardware_config_mtime": None,
-  "embed_mode": "zembed" if EMBED_MODE == True else "local",
+  "embed_mode": "zembed" if EMBED_MODE else "local",
   "embed_model": EMBED_MODEL_NAME,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
@@ -288,7 +312,7 @@ def ensure_embed_model_loaded() -> None:
   """Load the embedding model exactly once, routing to the correct engine."""
   global _EMBED_MODEL_READY
   if not _EMBED_MODEL_READY:
-    if EMBED_MODE == True:
+    if EMBED_MODE:
       rag_rust.load_embed_model_zembed()
     else:
       rag_rust.load_embed_model_local()
@@ -303,7 +327,7 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
   """
   refresh_hardware_config_if_needed(force=False)
   ensure_embed_model_loaded()
-  if EMBED_MODE == True:
+  if EMBED_MODE:
     return rag_rust.embed_texts_rust_zembed(texts, _ACTIVE_EMBED_BATCH_SIZE)
   else:
     prefixed = [f"passage: {t}" for t in texts]
@@ -317,7 +341,7 @@ def embed_query(query: str) -> List[float]:
   - local   : prepends BGE query prefix and calls rag_rust.embed_texts_rust_local
   """
   ensure_embed_model_loaded()
-  if EMBED_MODE == True:
+  if EMBED_MODE:
     return rag_rust.embed_query_rust_zembed(query)
   else:
     prefixed = f"{BGE_QUERY_PREFIX}{query}"
@@ -395,7 +419,7 @@ def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
     "rebuild": rebuild,
     "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
-    "embed_mode": "zembed" if EMBED_MODE == True else "local",
+    "embed_mode": "zembed" if EMBED_MODE else "local",
     "embed_model": EMBED_MODEL_NAME,
   }
 
@@ -451,7 +475,7 @@ def run_index(
       "chunks": stats.get("chunks"),
       "chunking": stats.get("chunking"),
       "embed_batch_size": stats.get("embed_batch_size"),
-      "embed_mode": "zembed" if EMBED_MODE == True else "local",
+      "embed_mode": "zembed" if EMBED_MODE else "local",
       "embed_model": EMBED_MODEL_NAME,
     }
   )
@@ -503,7 +527,7 @@ def health():
     "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
-    "embed_mode": "zembed" if EMBED_MODE == True else "local",
+    "embed_mode": "zembed" if EMBED_MODE else "local",
     "embed_model": EMBED_MODEL_NAME,
   }
 
@@ -569,7 +593,7 @@ def clear_index() -> None:
       "last_error": None,
       "chunking": "pdfium_sliding_window",
       "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
-      "embed_mode": "zembed" if EMBED_MODE == True else "local",
+      "embed_mode": "zembed" if EMBED_MODE else "local",
       "embed_model": EMBED_MODEL_NAME,
     }
   )

@@ -50,7 +50,7 @@ fn get_runtime() -> &'static Runtime {
 fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
     EMBEDDER.get_or_try_init(|| {
         std::env::set_var("TOKENIZERS_PARALLELISM", "false");
-        let options = InitOptions::new(EmbeddingModel::BGESmallENV15)
+        let options = InitOptions::new(EmbeddingModel::BGELargeENV15)
             .with_show_download_progress(false);
         TextEmbedding::try_new(options)
             .map(Mutex::new)
@@ -169,7 +169,7 @@ fn embed_texts_rust_local(py: Python<'_>, texts: Vec<String>, embed_batch_size: 
     // 2. Release the GIL for the entire CPU-bound embedding process
     let embeddings = py.allow_threads(|| {
         let embedder = get_embedder()?;
-        let guard = embedder.lock().map_err(|_| "Embedder mutex poisoned")?;
+        let mut guard = embedder.lock().map_err(|_| "Embedder mutex poisoned")?;
 
         guard.embed(texts, Some(batch_size))
              .map_err(|e| format!("Fastembed failed: {e}"))
@@ -339,9 +339,46 @@ fn clean_research_text(text: &str) -> String {
     cleaned_paragraphs.join("\n\n")
 }
 
+
+
+fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
+    let mut doc = PdfDocument::open(path)
+        .map_err(|e| format!("Could not open PDF: {:?}", e))?;
+
+    let config = TextPipelineConfig::default();
+    let pipeline = TextPipeline::with_config(config.clone());
+    let converter = pdf_oxide::pipeline::converters::MarkdownOutputConverter::new();
+
+    let num_pages = doc.page_count()
+        .map_err(|e| format!("Could not get page count: {:?}", e))?;
+
+    let mut pages_text = Vec::new();
+
+    for i in 0..num_pages {
+        // 1. Pass the ColumnAware parameter directly to the extraction method
+        if let Ok(spans) = doc.extract_spans_with_reading_order(i, ReadingOrder::ColumnAware) {
+            
+            // 2. The context now only needs the page number
+            let context = ReadingOrderContext::default()
+                .with_page(i as u32);
+
+            if let Ok(ordered_spans) = pipeline.process(spans, context) {
+                if let Ok(markdown) = converter.convert(&ordered_spans, &config) {
+                    let trimmed = markdown.trim().to_string();
+                    if !trimmed.is_empty() {
+                        pages_text.push(trimmed);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(pages_text)
+}
+
 // added
 fn split_sentences(text: &str) -> Vec<String> {
-    let abbrevs = ["dr", "mr", "mrs", "prof", "fig", "et al", "e.g", "i.e", "vs", "no", "vol"];
+    let abbrevs = ["dr", "al.", "mr", "mrs", "prof", "fig", "et al", "e.g", "i.e", "vs", "no", "vol"];
 
     // First split on paragraph boundaries — these are hard boundaries
     let paragraphs: Vec<&str> = text.split("\n\n").map(str::trim).filter(|s| !s.is_empty()).collect();
@@ -396,50 +433,13 @@ fn strip_academic_header(text: &str) -> &str {
     text
 }
 
-
-fn extract_pages_from_path(path: &str) -> Result<Vec<String>, String> {
-    let mut doc = PdfDocument::open(path)
-        .map_err(|e| format!("Could not open PDF: {:?}", e))?;
-
-    let config = TextPipelineConfig::default();
-    let pipeline = TextPipeline::with_config(config.clone());
-    let converter = pdf_oxide::pipeline::converters::MarkdownOutputConverter::new();
-
-    let num_pages = doc.page_count()
-        .map_err(|e| format!("Could not get page count: {:?}", e))?;
-
-    let mut pages_text = Vec::new();
-
-    for i in 0..num_pages {
-        // 1. Pass the ColumnAware parameter directly to the extraction method
-        if let Ok(spans) = doc.extract_spans_with_reading_order(i, ReadingOrder::ColumnAware) {
-            
-            // 2. The context now only needs the page number
-            let context = ReadingOrderContext::default()
-                .with_page(i as u32);
-
-            if let Ok(ordered_spans) = pipeline.process(spans, context) {
-                if let Ok(markdown) = converter.convert(&ordered_spans, &config) {
-                    let trimmed = markdown.trim().to_string();
-                    if !trimmed.is_empty() {
-                        pages_text.push(trimmed);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(pages_text)
-}
-
-
 // mod
 #[pyfunction]
 fn sliding_window_chunker(
     text:      String,
     max_chars: usize,
     overlap:   usize,
-) -> PyResult<Vec<String>> {
+    ) -> PyResult<Vec<String>> {
     let stripped = strip_academic_header(&text);
     if stripped.is_empty() {
         return Ok(Vec::new());
@@ -497,6 +497,119 @@ fn sliding_window_chunker(
     Ok(chunks)
 }
 
+// logic for cosine similarity
+fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
+    let dot_product: f32 = v1.iter().zip(v2).map(|(a, b)| a * b).sum();
+    let norm_v1: f32 = v1.iter().map(|v| v.powi(2)).sum::<f32>().sqrt();
+    let norm_v2: f32 = v2.iter().map(|v| v.powi(2)).sum::<f32>().sqrt();
+    dot_product / (norm_v1 * norm_v2)
+}
+
+// Helper for dynamic thresholding (Finds the value at the p-th percentile)
+fn calculate_dynamic_threshold(distances: &[f32], percentile: f32) -> f32 {
+    if distances.is_empty() { return 0.0; }
+    let mut sorted = distances.to_vec();
+    // Sort safely (floats can be tricky, but cosine distances are usually well-behaved)
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    
+    let index = ((sorted.len() - 1) as f32 * percentile) as usize;
+    sorted[index]
+}
+
+// Fallback: A simple version of your previous logic for oversized semantic chunks
+fn simple_sliding_window(text: &str, max_chars: usize) -> Vec<String> {
+    let sentences = split_sentences(text);
+    let mut chunks = Vec::new();
+    let mut current_chunk = Vec::new();
+    let mut current_len = 0;
+
+    for s in sentences {
+        if current_len + s.len() > max_chars && !current_chunk.is_empty() {
+            chunks.push(current_chunk.join(" "));
+            current_chunk.clear();
+            current_len = 0;
+        }
+        current_len += s.len();
+        current_chunk.push(s);
+    }
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk.join(" "));
+    }
+    chunks
+}
+#[pyfunction]
+fn semantic_window_chunker_advanced(
+    text: String,
+    max_chars: usize,
+    window_size: usize,
+    threshold_percentile: f32,
+) -> PyResult<Vec<String>> {
+    let stripped = strip_academic_header(&text);
+    let sentences = split_sentences(stripped);
+    if sentences.len() < window_size {
+        return Ok(vec![sentences.join(" ")]);
+    }
+
+    // FIX E0639: Initialize non-exhaustive struct
+    let mut options = InitOptions::default();
+    options.model_name = EmbeddingModel::AllMiniLML6V2;
+    
+    let mut model = TextEmbedding::try_new(options)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // 1. Create Overlapping Windows
+    let windows: Vec<String> = sentences
+        .windows(window_size)
+        .map(|w| w.join(" "))
+        .collect();
+
+    // 2. Embed Windows
+    let window_embeddings = model.embed(windows, None)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    // 3. Calculate "Distance" between consecutive windows
+    let mut distances = Vec::new();
+    for i in 0..window_embeddings.len() - 1 {
+        let dist = 1.0 - cosine_similarity(&window_embeddings[i], &window_embeddings[i+1]);
+        distances.push(dist);
+    }
+
+    // 4. Identify Break Points
+    let threshold = calculate_dynamic_threshold(&distances, threshold_percentile);
+    let mut break_points = Vec::new();
+    for (i, &dist) in distances.iter().enumerate() {
+        if dist > threshold {
+            break_points.push(i + (window_size / 2)); 
+        }
+    }
+
+    // 5. Final Assembly
+    let mut chunks = Vec::new();
+    let mut current_start = 0;
+    
+    for bp in break_points {
+        if bp >= sentences.len() { continue; }
+        let chunk_text = sentences[current_start..=bp].join(" ");
+        
+        if chunk_text.len() > max_chars {
+            chunks.extend(simple_sliding_window(&chunk_text, max_chars));
+        } else if !chunk_text.is_empty() {
+            chunks.push(chunk_text);
+        }
+        current_start = bp + 1;
+    }
+    
+    if current_start < sentences.len() {
+        let tail = sentences[current_start..].join(" ");
+        if tail.len() > max_chars {
+            chunks.extend(simple_sliding_window(&tail, max_chars));
+        } else {
+            chunks.push(tail);
+        }
+    }
+
+    Ok(chunks)
+}
 // outdated
 #[pyfunction]
 fn load_pdf_pages_markdown(paths: Vec<String>) -> PyResult<Vec<String>> {
@@ -987,7 +1100,8 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(embed_texts_rust_local, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_rust_zembed, m)?)?;
     m.add_function(wrap_pyfunction!(embed_query_rust_zembed, m)?)?;
-    m.add_function(wrap_pyfunction!(sliding_window_chunker, m)?)?;
+    // m.add_function(wrap_pyfunction!(sliding_window_chunker, m)?)?;
+    m.add_function(wrap_pyfunction!(semantic_window_chunker_advanced, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_many, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(lancedb_create_or_open, m)?)?;

@@ -29,6 +29,22 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+# Bootstrap the pyo3 extension on Windows when the repo contains the built DLL
+# but the Python importable .pyd isn't present yet.
+_RAG_RUST_PYD = Path(__file__).with_name("rag_rust.pyd")
+if not _RAG_RUST_PYD.exists():
+  for _dll in (
+    Path("rag_rust/target/release/rag_rust.dll"),
+    Path("rag_rust/target/maturin/rag_rust.dll"),
+  ):
+    if _dll.exists():
+      try:
+        shutil.copyfile(_dll, _RAG_RUST_PYD)
+      except Exception:
+        pass
+      break
+
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 from get_hardware_config import load_hardware_config, run_hardware_calibration
@@ -71,7 +87,7 @@ INDEXED_SHA_KEY = "indexed_sha256"
 
 # Embeddings (local fastembed or zembed API via Rust)
 EMBED_MODE = is_truthy_env("EMBED_MODE")
-EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or ("zembed-1" if EMBED_MODE else "BAAI/bge-small-en-v1.5")
+EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or ("zembed-1" if EMBED_MODE else "BAAI/bge-large-en-v1.5")
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 # Chunking
@@ -88,10 +104,10 @@ OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 
 # Per-agent models
-REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:0.5b")
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
-EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
-SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
+REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:1.5b")
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "mistral:7b")
+EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "mistral:7b")
+SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "mistral:7b")
 
 # DPS (Dynamic Passage Selection)
 DPS_ENABLED     = True
@@ -397,42 +413,94 @@ def embed_query(query: str) -> List[float]:
   return rag_rust.embed_texts_rust_local([prefixed_query], _ACTIVE_EMBED_BATCH_SIZE)[0]
 
 
+# def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str], List[int], Dict[str, int]]:
+#   """Load PDFs via PDFium and chunk with sliding_window_chunker.
+
+#   Returns (chunk_texts, chunk_sources, chunk_pages, page_counts).
+#   Uses only exported Rust functions: load_pdf_pages_pdfium_many, sliding_window_chunker.
+#   """
+#   paths = sorted(PDF_DIR.glob("*.pdf"))
+#   if not paths:
+#     raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
+
+#   chunk_texts: List[str] = []
+#   chunk_sources: List[str] = []
+#   chunk_pages: List[int] = []
+#   page_counts: Dict[str, int] = {}
+
+#   for path in paths:
+#     try:
+#       file_pages = rag_rust.load_pdf_pages_pdfium_many([str(path)])
+#     except Exception as exc:
+#       raise HTTPException(status_code=500, detail=f"PDFium loader failed for {path.name}: {exc}") from exc
+
+#     page_counts[path.name] = len(file_pages)
+#     for page_idx, text in enumerate(file_pages, start=1):
+#       if max_pages is not None and sum(page_counts.values()) > max_pages:
+#         break
+#       if not text or not text.strip():
+#         continue
+#       page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
+#       for chunk_text in page_chunks:
+#         if len(chunk_text.strip()) > MIN_CHUNK_LEN:
+#           chunk_texts.append(chunk_text)
+#           chunk_sources.append(path.name)
+#           chunk_pages.append(page_idx)
+
+#   update_pages_meta(page_counts)
+#   return chunk_texts, chunk_sources, chunk_pages, page_counts
+
+# --- New Constants for Semantic Chunking ---
+# Usually 3 sentences is a good balance for local context
+SEMANTIC_WINDOW_SIZE = 3 
+# 0.95 means we only break at the top 5% of most significant semantic shifts
+SEMANTIC_THRESHOLD_PTILE = 0.95 
+
 def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str], List[int], Dict[str, int]]:
-  """Load PDFs via PDFium and chunk with sliding_window_chunker.
+    """Load PDFs via PDFium and chunk with semantic_window_chunker_advanced.
 
-  Returns (chunk_texts, chunk_sources, chunk_pages, page_counts).
-  Uses only exported Rust functions: load_pdf_pages_pdfium_many, sliding_window_chunker.
-  """
-  paths = sorted(PDF_DIR.glob("*.pdf"))
-  if not paths:
-    raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
+    Returns (chunk_texts, chunk_sources, chunk_pages, page_counts).
+    Uses exported Rust functions: load_pdf_pages_pdfium_many, semantic_window_chunker_advanced.
+    """
+    paths = sorted(PDF_DIR.glob("*.pdf"))
+    if not paths:
+        raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
 
-  chunk_texts: List[str] = []
-  chunk_sources: List[str] = []
-  chunk_pages: List[int] = []
-  page_counts: Dict[str, int] = {}
+    chunk_texts: List[str] = []
+    chunk_sources: List[str] = []
+    chunk_pages: List[int] = []
+    page_counts: Dict[str, int] = {}
 
-  for path in paths:
-    try:
-      file_pages = rag_rust.load_pdf_pages_pdfium_many([str(path)])
-    except Exception as exc:
-      raise HTTPException(status_code=500, detail=f"PDFium loader failed for {path.name}: {exc}") from exc
+    for path in paths:
+        try:
+            file_pages = rag_rust.load_pdf_pages_pdfium_many([str(path)])
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"PDFium loader failed for {path.name}: {exc}") from exc
 
-    page_counts[path.name] = len(file_pages)
-    for page_idx, text in enumerate(file_pages, start=1):
-      if max_pages is not None and sum(page_counts.values()) > max_pages:
-        break
-      if not text or not text.strip():
-        continue
-      page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
-      for chunk_text in page_chunks:
-        if len(chunk_text.strip()) > MIN_CHUNK_LEN:
-          chunk_texts.append(chunk_text)
-          chunk_sources.append(path.name)
-          chunk_pages.append(page_idx)
+        page_counts[path.name] = len(file_pages)
+        for page_idx, text in enumerate(file_pages, start=1):
+            if max_pages is not None and sum(page_counts.values()) > max_pages:
+                break
+            if not text or not text.strip():
+                continue
 
-  update_pages_meta(page_counts)
-  return chunk_texts, chunk_sources, chunk_pages, page_counts
+            # Swapped sliding_window_chunker for semantic_window_chunker_advanced
+            # Parameters: (text, max_chars, window_size, threshold_percentile)
+            page_chunks = rag_rust.semantic_window_chunker_advanced(
+                text, 
+                CHUNK_SIZE, 
+                SEMANTIC_WINDOW_SIZE, 
+                SEMANTIC_THRESHOLD_PTILE
+            )
+
+            for chunk_text in page_chunks:
+                if len(chunk_text.strip()) > MIN_CHUNK_LEN:
+                    chunk_texts.append(chunk_text)
+                    chunk_sources.append(path.name)
+                    chunk_pages.append(page_idx)
+
+    update_pages_meta(page_counts)
+    return chunk_texts, chunk_sources, chunk_pages, page_counts
 
 
 def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
@@ -922,7 +990,7 @@ def query_stream(payload: QueryRequest):
     )
 
     while state["should_retry"]:
-      state = refiner.run(state)
+      # state = refiner.run(state)
       for item in pending:
         yield sse_event("trace", item)
       pending.clear()

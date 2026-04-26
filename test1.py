@@ -34,7 +34,7 @@ else:
         
         with open("pages.txt", "w", encoding="utf-8") as f:
             for page_idx, page in enumerate(pages):
-                chunks = rag_rust.sliding_window_chunker(page, max_chars=800, overlap=100)
+                chunks = rag_rust.sliding_window_chunker(page, max_chars=2000, overlap=300)
                 print(f"Page {page_idx+1}: {len(chunks)} chunks")
                 for chunk_idx, chunk in enumerate(chunks):
                     f.write(f"--- Page {page_idx+1} Chunk {chunk_idx+1} ---\n{chunk}\n\n")

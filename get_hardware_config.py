@@ -2,10 +2,27 @@ from __future__ import annotations
 
 import json
 import platform
+import shutil
 import time
 from pathlib import Path
 from statistics import mean
 from typing import Any, Dict, Optional
+import os
+
+# Bootstrap the pyo3 extension on Windows when the repo contains the built DLL
+# but the Python importable .pyd isn't present yet.
+_RAG_RUST_PYD = Path(__file__).with_name("rag_rust.pyd")
+if not _RAG_RUST_PYD.exists():
+  for _dll in (
+    Path("rag_rust/target/release/rag_rust.dll"),
+    Path("rag_rust/target/maturin/rag_rust.dll"),
+  ):
+    if _dll.exists():
+      try:
+        shutil.copyfile(_dll, _RAG_RUST_PYD)
+      except Exception:
+        pass
+      break
 
 import rag_rust
 
@@ -14,6 +31,15 @@ import rag_rust
 QUICK_NUM_CHUNKS_TO_TEST = 64
 QUICK_BATCH_SIZES = [4, 8, 16, 24, 32]
 QUICK_REPEATS = 2
+def _truthy_env(name: str) -> bool:
+  """Parse env vars like '1', 'true', 'yes', 'on', 'zembed' as True."""
+  val = os.getenv(name)
+  if val is None:
+    return False
+  return val.strip().lower() in ("1", "true", "yes", "y", "on", "zembed")
+
+
+EMBED_MODE = _truthy_env("EMBED_MODE")
 
 # Full mode (slower, more exhaustive).
 FULL_NUM_CHUNKS_TO_TEST = 256
@@ -74,8 +100,12 @@ def run_hardware_calibration(
 
   if verbose:
     print("Initializing embedding model...")
-  rag_rust.load_embed_model()
-  rag_rust.embed_texts_rust(warmup_data, batch_sizes[0])
+  if EMBED_MODE:
+    rag_rust.load_embed_model_zembed()
+    rag_rust.embed_texts_rust_zembed(warmup_data, batch_sizes[0])
+  else:
+    rag_rust.load_embed_model_local()
+    rag_rust.embed_texts_rust_local(warmup_data, batch_sizes[0])
 
   results = []
   best_tps = 0.0
@@ -97,11 +127,17 @@ def run_hardware_calibration(
     durations = []
     try:
       # Small warmup per tested batch size to avoid cold-start bias.
-      rag_rust.embed_texts_rust(warmup_data, b_size)
+      if EMBED_MODE:
+        rag_rust.embed_texts_rust_zembed(warmup_data, b_size)
+      else:
+        rag_rust.embed_texts_rust_local(warmup_data, b_size)
 
       for _ in range(repeats):
         t0 = time.perf_counter()
-        _ = rag_rust.embed_texts_rust(test_data, b_size)
+        if EMBED_MODE:
+          _ = rag_rust.embed_texts_rust_zembed(test_data, b_size)
+        else:
+          _ = rag_rust.embed_texts_rust_local(test_data, b_size)
         durations.append(time.perf_counter() - t0)
 
       avg_time = mean(durations)

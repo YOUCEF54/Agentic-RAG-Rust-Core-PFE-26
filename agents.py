@@ -63,12 +63,21 @@ class Retriever(Agent):
         # top_n: how many candidates to fetch for DPS reranking
         # if None, falls back to top_k (DPS disabled mode)
         self.top_n = top_n or top_k
+        self._attempt_top_n_multipliers = [1.0, 1.5, 2.0]  # expand on retry
 
     def run(self, state: dict) -> dict:
         query = state.get("refined_query") or state["query"]
 
+        attempt = state.get("attempts", 0)
+
+        # Expand candidate pool on retries to find better evidence
+        multiplier = self._attempt_top_n_multipliers[
+            min(attempt, len(self._attempt_top_n_multipliers) - 1)
+        ]
+        effective_top_n = int(self.top_n * multiplier)
+
         # Fetch Top-N candidates for DPS
-        candidates = self.retrieve_fn(query, top_k=self.top_n)
+        candidates = self.retrieve_fn(query, top_k=effective_top_n)
         
         # Store full candidate list for DPS selector
         state["chunks_candidates"] = candidates
@@ -78,8 +87,8 @@ class Retriever(Agent):
         Agent._trace(
             state,
             self.name,
-            f"Retrieved {len(candidates)} candidates (top_n={self.top_n}, top_k={self.top_k}).",
-            {"query_used": query, "top_n": self.top_n, "top_k": self.top_k},
+            f"Retrieved {len(candidates)} candidates (attempt={attempt}, top_n={effective_top_n}).",
+            {"query_used": query, "effective_top_n": effective_top_n}
         )
         return state
 
@@ -89,11 +98,23 @@ class Generator(Agent):
     def __init__(self, chat_fn):
         super().__init__("Generator")
         self.chat_fn = chat_fn
+
+    @staticmethod
+    def _strip_chunk_citations(text: str) -> str:
+        """Remove model-leaked chunk citations like '(Chunk 3)' / '[Chunk 3]'."""
+        if not text:
+            return text
+        text = re.sub(r"\(\s*chunk\s*\d+\s*\)", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\[\s*chunk\s*\d+\s*\]", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        return text.strip()
         
     def run(self, state: dict) -> dict:
+        # Avoid leaking internal chunk numbering into the user-facing answer.
         context = "\n\n".join(
-            f"[Chunk {i+1} | {source} p.{page}]:\n{text}"
-            for i, (text, source, page, _dist) in enumerate(state["chunks"])
+            f"[source: {source} | page: {page}]\n{text}"
+            for (text, source, page, _dist) in state["chunks"]
         )
 
         instruction_prompt = (
@@ -103,7 +124,8 @@ class Generator(Agent):
             "2. Quote or paraphrase directly from the context to support your answer.\n"
             "3. If the context contains relevant information, USE IT — even if it only partially answers the question.\n"
             "4. Only say 'The document does not contain this information' if NONE of the chunks are relevant at all.\n"
-            "5. Do NOT add information that is not in the context.\n\n"
+            "5. Do NOT add information that is not in the context.\n"
+            "6. Do NOT include citations like '(Chunk 3)' or mention chunk numbers/labels in your final answer.\n\n"
             f"Retrieved Context:\n{context}\n"
         )
         query = state.get("refined_query") or state["query"]
@@ -112,7 +134,7 @@ class Generator(Agent):
             {"role": "user", "content": query},
         ]
         answer, model_used = self.chat_fn(messages)
-        state["answer"] = answer
+        state["answer"] = self._strip_chunk_citations(answer)
         state["model_used"] = model_used
         models = state.setdefault("models", {})
         models["generator"] = model_used
@@ -244,11 +266,22 @@ class QueryRefiner(Agent):
         self.chat_fn = chat_fn
 
     def run(self, state: dict) -> dict:
-        prompt = (
-            "Rewrite the user query to be clearer and more specific for document retrieval. "
-            "Return ONLY the rewritten query, nothing else. No explanation, no preamble.\n\n"
-            f"User query: {state['query']}"
-        )
+        attempt = state.get("attempts", 0)
+        if attempt == 0:
+            prompt = (
+                "Rewrite the user query to be clearer and more specific for document retrieval. "
+                "Return ONLY the rewritten query, nothing else.\n\n"
+                f"User query: {state['query']}"
+            )
+        else:
+            # On retry: try a different angle — more keywords, less natural language
+            prompt = (
+                "The previous retrieval attempt was insufficient. Rewrite this query using "
+                "different keywords or a different angle to find relevant document passages. "
+                "Return ONLY the rewritten query.\n\n"
+                f"Original query: {state['query']}\n"
+                f"Previous rewrite: {state.get('refined_query', '')}"
+            )
         messages = [{"role": "user", "content": prompt}]
         try:
             refined_query, model_used = self.chat_fn(messages)

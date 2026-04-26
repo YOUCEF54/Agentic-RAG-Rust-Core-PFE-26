@@ -67,16 +67,24 @@ def get_env_int(name: str, default: int) -> int:
     except ValueError as exc:
         raise ValueError(f"Environment variable {name} must be an integer, got: {value!r}") from exc
 
+
+def is_truthy_env(name: str) -> bool:
+  value = os.getenv(name)
+  if value is None:
+    return False
+  return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
 # --- Config ---
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
 OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 300)
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "mistral:7b")
-EMBED_MODE = os.getenv("EMBED_MODE")
+EMBED_MODE = is_truthy_env("EMBED_MODE")
 if EMBED_MODE :
     EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "zembed-1"
 else:
-    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-small-en-v1.5"
+    EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or "BAAI/bge-large-en-v1.5"
 
+print("EMBED MODE: ",EMBED_MODE)
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 TOP_K = get_env_int("TOP_K", 3)
 
@@ -99,9 +107,11 @@ CACHE_FILE = ".rag_cache.json"
 PDF_DIR = os.getenv("PDF_FOLDER", "pdfs")
 PDF_PATHS: list[str] = []
 MAX_PAGES = None
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 150
 EMBED_BATCH_SIZE = 4
+SEMANTIC_WINDOW_SIZE = 3         # Number of sentences to compare
+SEMANTIC_THRESHOLD_PTILE = 0.95  # Breaks at the top 5% of semantic shifts
 
 # added
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
@@ -219,10 +229,10 @@ def ollama_chat(model: str, messages: list[dict]) -> tuple[str, str | None]:
 #EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "qwen2.5:1.5b")
 #SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "qwen2.5:3b")
 
-REFINER_MODEL   = os.getenv("REFINER_MODEL",   "mistral")
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "mistral")
-EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "mistral")
-SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "mistral")
+REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:1.5b")
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "mistral:7b")
+EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "mistral:7b")
+SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "mistral:7b")
 
 chat_refiner   = lambda msgs: ollama_chat(REFINER_MODEL,   msgs)
 chat_generator = lambda msgs: ollama_chat(GENERATOR_MODEL, msgs)
@@ -247,16 +257,47 @@ def embed_query_local(text: str) -> list[float]:
     return rag_rust.embed_texts_rust_local([prefixed], EMBED_BATCH_SIZE)[0]
 
 # --- Chunking (PDFium + Sliding Window) ---
+# def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
+#     all_chunks: list[Chunk] = []
+#     for pdf_path in paths:
+#         source_name = Path(pdf_path).name
+#         pages = rag_rust.load_pdf_pages_pdfium_many([pdf_path])
+#         print(f"  {source_name}: {len(pages)} pages")
+#         for page_idx, text in enumerate(pages, start=1):
+#             if not text or not text.strip():
+#                 continue
+#             page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
+#             for chunk_idx, chunk_text in enumerate(page_chunks):
+#                 if len(chunk_text.strip()) > 30:
+#                     all_chunks.append(Chunk(
+#                         text=chunk_text,
+#                         source=source_name,
+#                         page=page_idx,
+#                         chunk_idx=chunk_idx,
+#                     ))
+#     return all_chunks
+
 def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
     all_chunks: list[Chunk] = []
     for pdf_path in paths:
         source_name = Path(pdf_path).name
+        # Using your existing Rust-backed PDFium loader
         pages = rag_rust.load_pdf_pages_pdfium_many([pdf_path])
-        print(f"  {source_name}: {len(pages)} pages")
+        print(f"  {source_name}: {len(pages)} pages (Semantic Processing)")
+        
         for page_idx, text in enumerate(pages, start=1):
             if not text or not text.strip():
                 continue
-            page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
+            
+            # Use the new advanced semantic chunker
+            # Parameters: (text, max_chars, window_size, threshold_percentile)
+            page_chunks = rag_rust.semantic_window_chunker_advanced(
+                text, 
+                CHUNK_SIZE, 
+                SEMANTIC_WINDOW_SIZE, 
+                SEMANTIC_THRESHOLD_PTILE
+            )
+            
             for chunk_idx, chunk_text in enumerate(page_chunks):
                 if len(chunk_text.strip()) > 30:
                     all_chunks.append(Chunk(
@@ -266,7 +307,6 @@ def load_and_chunk_pdfium(paths: list[str]) -> list[Chunk]:
                         chunk_idx=chunk_idx,
                     ))
     return all_chunks
-
 # --- DB ---
 
 # def build_or_open_table(chunks: list[str], needs_rebuild: bool, embed_mode : bool = os.getenv("EMBED_MODE")) -> None:
