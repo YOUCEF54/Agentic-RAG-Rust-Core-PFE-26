@@ -1,21 +1,30 @@
-"""API server for the Rust/Python RAG stack (Ollama backend).
+"""API server for the Rust/Python RAG stack.
 
 Run:
-  uvicorn api_ollama:app --reload
+  uvicorn api:app --reload
+
+Embedding engines (controlled by EMBED_MODE env var):
+  - EMBED_MODE is set (any truthy value)  → ZeroEntropy zembed API (Rust)
+  - EMBED_MODE is unset / empty           → Local ONNX (BAAI/bge-small-en-v1.5, Rust fastembed)
+
+LLM backend:
+  Calls a local Ollama instance (http://localhost:11434) via its OpenAI-compatible
+  /v1/chat/completions endpoint.  Set OLLAMA_BASE_URL and OLLAMA_CHAT_MODEL in
+  your .env to override the defaults.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-os.environ["OMP_NUM_THREADS"] = "4"        
+os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["MKL_NUM_THREADS"] = "4"
 os.environ["OPENBLAS_NUM_THREADS"] = "4"
 os.environ["VECLIB_MAX_THREADS"] = "4"
 os.environ["NUMEXPR_NUM_THREADS"] = "4"
 
 # Désactive les flags de télémétrie ONNX qui peuvent ralentir l'initialisation
-os.environ["ONNXRUNTIME_FLAGS"] = "0" 
+os.environ["ONNXRUNTIME_FLAGS"] = "0"
 # ----------------------------------------
 import re
 import shutil
@@ -48,66 +57,57 @@ if not _RAG_RUST_PYD.exists():
 import rag_rust
 from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
 from get_hardware_config import load_hardware_config, run_hardware_calibration
+from dotenv import load_dotenv
 
 APP_NAME = "Agentic-RAG-Rust-Core-PFE-26"
-
-
-def get_env_float(name: str, default: float) -> float:
-  value = os.getenv(name)
-  if value is None or not value.strip():
-    return default
-  try:
-    return float(value)
-  except ValueError as exc:
-    raise ValueError(f"Environment variable {name} must be a float, got: {value!r}") from exc
-
-
-def get_env_int(name: str, default: int) -> int:
-  value = os.getenv(name)
-  if value is None or not value.strip():
-    return default
-  try:
-    return int(value)
-  except ValueError as exc:
-    raise ValueError(f"Environment variable {name} must be an integer, got: {value!r}") from exc
-
-
-def is_truthy_env(name: str) -> bool:
-  value = os.getenv(name)
-  if value is None:
-    return False
-  return value.strip().lower() not in {"", "0", "false", "no", "off"}
-
+load_dotenv()
 # Storage / DB
 PDF_DIR = Path("data/pdfs")
 META_PATH = Path("data/metadata.json")
 DB_DIR = "lancedb"
 TABLE_NAME = "pdf_chunks"
-INDEXED_SHA_KEY = "indexed_sha256"
 
-# Embeddings (local fastembed or zembed API via Rust)
-EMBED_MODE = is_truthy_env("EMBED_MODE")
-EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME") or ("zembed-1" if EMBED_MODE else "BAAI/bge-large-en-v1.5")
+# ── Embedding engine selection ────────────────────────────────────────────────
+def _truthy_env(name: str) -> bool:
+  """Parse env vars like '1', 'true', 'yes', 'on', 'zembed' as True."""
+  val = os.getenv(name)
+  if val is None:
+    return False
+  return val.strip().lower() in ("1", "true", "yes", "y", "on", "zembed")
+
+
+# Set EMBED_MODE to a truthy value (e.g. "zembed" or "1") to use the
+# ZeroEntropy zembed API. Leave it unset/empty to use the local ONNX engine.
+EMBED_MODE = _truthy_env("EMBED_MODE")
+
+EMBED_MODEL_NAME = os.getenv(
+  "EMBED_MODEL_NAME",
+  "zembed-1" if EMBED_MODE else "BAAI/bge-small-en-v1.5",
+)
+
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Chunking
-CHUNK_SIZE = get_env_int("CHUNK_SIZE", 1000)
-CHUNK_OVERLAP = get_env_int("CHUNK_OVERLAP", 150)
-MIN_CHUNK_LEN = get_env_int("MIN_CHUNK_LEN", 30)
-EMBED_BATCH_SIZE = get_env_int("EMBED_BATCH_SIZE", 4)
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
+MIN_CHUNK_LEN = int(os.getenv("MIN_CHUNK_LEN", "30"))
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "4"))
 HARDWARE_CONFIG_PATH = os.getenv("HARDWARE_CONFIG_PATH", "hardware_config.json")
 
-# Ollama
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api")
-OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 300)
-OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
-CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
-
-# Per-agent models
-REFINER_MODEL   = os.getenv("REFINER_MODEL",   "qwen2.5:1.5b")
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "mistral:7b")
-EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "mistral:7b")
-SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "mistral:7b")
+# ── Ollama (local LLM) ────────────────────────────────────────────────────────
+# Ollama exposes an OpenAI-compatible endpoint at /v1/chat/completions.
+# Override these in your .env file as needed.
+#
+#   OLLAMA_BASE_URL=http://localhost:11434   (default)
+#   OLLAMA_CHAT_MODEL=llama3                (default)
+#   OLLAMA_TIMEOUT=120                      (default, in seconds)
+#
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "llama3")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+CHAT_TEMPERATURE = 0.2
+# ─────────────────────────────────────────────────────────────────────────────
 
 # DPS (Dynamic Passage Selection)
 DPS_ENABLED     = True
@@ -127,8 +127,9 @@ _INDEX_INFO: Dict[str, Any] = {
   "last_error": None,
   "chunking": "pdfium_sliding_window",
   "embed_batch_size": EMBED_BATCH_SIZE,
-  "embed_engine": "zembed_api" if EMBED_MODE else "onnx_local",
   "hardware_config_mtime": None,
+  "embed_mode": "zembed" if EMBED_MODE else "local",
+  "embed_model": EMBED_MODEL_NAME,
 }
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 _EMBED_MODEL_READY = False
@@ -136,7 +137,6 @@ _ACTIVE_EMBED_BATCH_SIZE = EMBED_BATCH_SIZE
 _HARDWARE_CONFIG_MTIME: Optional[float] = None
 
 # CORS (frontend integration)
-# _cors_allow_all = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
 _cors_allow_all = True
 _cors_origins = os.getenv("CORS_ORIGINS", "")
 if _cors_allow_all:
@@ -199,7 +199,6 @@ class DocumentMeta(BaseModel):
   uploaded_at: Optional[str] = None
   updated_at: Optional[str] = None
   sha256: Optional[str] = None
-  indexed_sha256: Optional[str] = None
   pages: Optional[int] = None
 
 
@@ -238,17 +237,6 @@ def sha256_bytes(data: bytes) -> str:
   return hashlib.sha256(data).hexdigest()
 
 
-def sha256_file(path: Path) -> str:
-  digest = hashlib.sha256()
-  with path.open("rb") as f:
-    while True:
-      chunk = f.read(1024 * 1024)
-      if not chunk:
-        break
-      digest.update(chunk)
-  return digest.hexdigest()
-
-
 def file_stats_meta(path: Path, uploaded_at: Optional[str] = None, sha256: Optional[str] = None) -> Dict[str, Any]:
   stat = path.stat()
   updated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
@@ -270,65 +258,6 @@ def update_pages_meta(page_counts: Dict[str, int]) -> None:
     if filename not in meta:
       meta[filename] = {"filename": filename}
     meta[filename]["pages"] = pages
-  save_metadata(meta)
-
-
-def refresh_document_hashes() -> Dict[str, str]:
-  ensure_dirs()
-  meta = load_metadata()
-  hashes: Dict[str, str] = {}
-  paths = sorted(PDF_DIR.glob("*.pdf"))
-  for path in paths:
-    entry = meta.get(path.name, {})
-    uploaded_at = entry.get("uploaded_at")
-    sha256 = entry.get("sha256") or sha256_file(path)
-    base = file_stats_meta(path, uploaded_at=uploaded_at, sha256=sha256)
-    if path.name not in meta:
-      meta[path.name] = base
-    else:
-      indexed_sha = meta[path.name].get(INDEXED_SHA_KEY)
-      meta[path.name].update(base)
-      if indexed_sha is not None:
-        meta[path.name][INDEXED_SHA_KEY] = indexed_sha
-    hashes[path.name] = sha256
-  save_metadata(meta)
-  return hashes
-
-
-def select_documents_for_indexing(rebuild: bool) -> tuple[List[Path], Dict[str, str], bool, List[str]]:
-  paths = sorted(PDF_DIR.glob("*.pdf"))
-  if not paths:
-    raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
-
-  file_hashes = refresh_document_hashes()
-  meta = load_metadata()
-
-  if rebuild:
-    return paths, file_hashes, True, []
-
-  to_process: List[Path] = []
-  skipped: List[str] = []
-  for path in paths:
-    current_sha = file_hashes.get(path.name)
-    indexed_sha = (meta.get(path.name) or {}).get(INDEXED_SHA_KEY)
-    if current_sha and current_sha == indexed_sha:
-      skipped.append(path.name)
-      continue
-    to_process.append(path)
-
-  return to_process, file_hashes, False, skipped
-
-
-def mark_documents_indexed(indexed_hashes: Dict[str, str], page_counts: Dict[str, int]) -> None:
-  if not indexed_hashes and not page_counts:
-    return
-  meta = load_metadata()
-  for filename, sha256 in indexed_hashes.items():
-    if filename not in meta:
-      meta[filename] = {"filename": filename}
-    meta[filename][INDEXED_SHA_KEY] = sha256
-    if filename in page_counts:
-      meta[filename]["pages"] = page_counts[filename]
   save_metadata(meta)
 
 
@@ -387,120 +316,86 @@ def refresh_hardware_config_if_needed(force: bool = False) -> Optional[Dict[str,
 refresh_hardware_config_if_needed(force=True)
 
 
+# ── Embedding helpers (dual-engine) ──────────────────────────────────────────
+
 def ensure_embed_model_loaded() -> None:
+  """Load the embedding model exactly once, routing to the correct engine."""
   global _EMBED_MODEL_READY
   if not _EMBED_MODEL_READY:
-    rag_rust.load_embed_model_zembed() if EMBED_MODE else rag_rust.load_embed_model_local()
+    if EMBED_MODE:
+      rag_rust.load_embed_model_zembed()
+    else:
+      rag_rust.load_embed_model_local()
     _EMBED_MODEL_READY = True
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-  """Embed indexed passages using configured embedding backend."""
+  """Embed indexed passages, routing to zembed or local ONNX based on EMBED_MODE.
+
+  - zembed  : calls rag_rust.embed_texts_rust_zembed (no prefix needed)
+  - local   : prepends 'passage: ' prefix and calls rag_rust.embed_texts_rust_local
+  """
   refresh_hardware_config_if_needed(force=False)
   ensure_embed_model_loaded()
   if EMBED_MODE:
     return rag_rust.embed_texts_rust_zembed(texts, _ACTIVE_EMBED_BATCH_SIZE)
-  prefixed_texts = [f"passage: {t}" for t in texts]
-  return rag_rust.embed_texts_rust_local(prefixed_texts, _ACTIVE_EMBED_BATCH_SIZE)
+  else:
+    prefixed = [f"passage: {t}" for t in texts]
+    return rag_rust.embed_texts_rust_local(prefixed, _ACTIVE_EMBED_BATCH_SIZE)
 
 
 def embed_query(query: str) -> List[float]:
-  """Embed query using configured embedding backend."""
+  """Embed a retrieval query, routing to zembed or local ONNX based on EMBED_MODE.
+
+  - zembed  : calls rag_rust.embed_query_rust_zembed
+  - local   : prepends BGE query prefix and calls rag_rust.embed_texts_rust_local
+  """
   ensure_embed_model_loaded()
   if EMBED_MODE:
-    return rag_rust.embed_texts_rust_zembed([query], _ACTIVE_EMBED_BATCH_SIZE)[0]
-  prefixed_query = f"{BGE_QUERY_PREFIX}{query}"
-  return rag_rust.embed_texts_rust_local([prefixed_query], _ACTIVE_EMBED_BATCH_SIZE)[0]
+    return rag_rust.embed_query_rust_zembed(query)
+  else:
+    prefixed = f"{BGE_QUERY_PREFIX}{query}"
+    return rag_rust.embed_texts_rust_local([prefixed], 1)[0]
 
+# ─────────────────────────────────────────────────────────────────────────────
 
-# def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str], List[int], Dict[str, int]]:
-#   """Load PDFs via PDFium and chunk with sliding_window_chunker.
-
-#   Returns (chunk_texts, chunk_sources, chunk_pages, page_counts).
-#   Uses only exported Rust functions: load_pdf_pages_pdfium_many, sliding_window_chunker.
-#   """
-#   paths = sorted(PDF_DIR.glob("*.pdf"))
-#   if not paths:
-#     raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
-
-#   chunk_texts: List[str] = []
-#   chunk_sources: List[str] = []
-#   chunk_pages: List[int] = []
-#   page_counts: Dict[str, int] = {}
-
-#   for path in paths:
-#     try:
-#       file_pages = rag_rust.load_pdf_pages_pdfium_many([str(path)])
-#     except Exception as exc:
-#       raise HTTPException(status_code=500, detail=f"PDFium loader failed for {path.name}: {exc}") from exc
-
-#     page_counts[path.name] = len(file_pages)
-#     for page_idx, text in enumerate(file_pages, start=1):
-#       if max_pages is not None and sum(page_counts.values()) > max_pages:
-#         break
-#       if not text or not text.strip():
-#         continue
-#       page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
-#       for chunk_text in page_chunks:
-#         if len(chunk_text.strip()) > MIN_CHUNK_LEN:
-#           chunk_texts.append(chunk_text)
-#           chunk_sources.append(path.name)
-#           chunk_pages.append(page_idx)
-
-#   update_pages_meta(page_counts)
-#   return chunk_texts, chunk_sources, chunk_pages, page_counts
-
-# --- New Constants for Semantic Chunking ---
-# Usually 3 sentences is a good balance for local context
-SEMANTIC_WINDOW_SIZE = 3 
-# 0.95 means we only break at the top 5% of most significant semantic shifts
-SEMANTIC_THRESHOLD_PTILE = 0.95 
 
 def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str], List[int], Dict[str, int]]:
-    """Load PDFs via PDFium and chunk with semantic_window_chunker_advanced.
+  """Load PDFs via PDFium and chunk with sliding_window_chunker.
 
-    Returns (chunk_texts, chunk_sources, chunk_pages, page_counts).
-    Uses exported Rust functions: load_pdf_pages_pdfium_many, semantic_window_chunker_advanced.
-    """
-    paths = sorted(PDF_DIR.glob("*.pdf"))
-    if not paths:
-        raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
+  Returns (chunk_texts, chunk_sources, chunk_pages, page_counts).
+  Uses only exported Rust functions: load_pdf_pages_pdfium_many, sliding_window_chunker.
+  """
+  paths = sorted(PDF_DIR.glob("*.pdf"))
+  if not paths:
+    raise HTTPException(status_code=400, detail="No PDFs found in data/pdfs.")
 
-    chunk_texts: List[str] = []
-    chunk_sources: List[str] = []
-    chunk_pages: List[int] = []
-    page_counts: Dict[str, int] = {}
+  chunk_texts: List[str] = []
+  chunk_sources: List[str] = []
+  chunk_pages: List[int] = []
+  page_counts: Dict[str, int] = {}
 
-    for path in paths:
-        try:
-            file_pages = rag_rust.load_pdf_pages_pdfium_many([str(path)])
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"PDFium loader failed for {path.name}: {exc}") from exc
+  for path in paths:
+    try:
+      file_pages = rag_rust.load_pdf_pages_pdfium_many([str(path)])
+    except Exception as exc:
+      raise HTTPException(status_code=500, detail=f"PDFium loader failed for {path.name}: {exc}") from exc
 
-        page_counts[path.name] = len(file_pages)
-        for page_idx, text in enumerate(file_pages, start=1):
-            if max_pages is not None and sum(page_counts.values()) > max_pages:
-                break
-            if not text or not text.strip():
-                continue
+    page_counts[path.name] = len(file_pages)
+    for page_idx, text in enumerate(file_pages, start=1):
+      if max_pages is not None and sum(page_counts.values()) > max_pages:
+        break
+      if not text or not text.strip():
+        continue
+      page_chunks = rag_rust.sliding_window_chunker(text, CHUNK_SIZE, CHUNK_OVERLAP)
+      for chunk_text in page_chunks:
+        if len(chunk_text.strip()) > MIN_CHUNK_LEN:
+          chunk_texts.append(chunk_text)
+          chunk_sources.append(path.name)
+          chunk_pages.append(page_idx)
 
-            # Swapped sliding_window_chunker for semantic_window_chunker_advanced
-            # Parameters: (text, max_chars, window_size, threshold_percentile)
-            page_chunks = rag_rust.semantic_window_chunker_advanced(
-                text, 
-                CHUNK_SIZE, 
-                SEMANTIC_WINDOW_SIZE, 
-                SEMANTIC_THRESHOLD_PTILE
-            )
-
-            for chunk_text in page_chunks:
-                if len(chunk_text.strip()) > MIN_CHUNK_LEN:
-                    chunk_texts.append(chunk_text)
-                    chunk_sources.append(path.name)
-                    chunk_pages.append(page_idx)
-
-    update_pages_meta(page_counts)
-    return chunk_texts, chunk_sources, chunk_pages, page_counts
+  update_pages_meta(page_counts)
+  return chunk_texts, chunk_sources, chunk_pages, page_counts
 
 
 def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
@@ -534,6 +429,8 @@ def build_index(rebuild: bool, max_pages: Optional[int]) -> dict:
     "rebuild": rebuild,
     "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+    "embed_mode": "zembed" if EMBED_MODE else "local",
+    "embed_model": EMBED_MODEL_NAME,
   }
 
 
@@ -588,6 +485,8 @@ def run_index(
       "chunks": stats.get("chunks"),
       "chunking": stats.get("chunking"),
       "embed_batch_size": stats.get("embed_batch_size"),
+      "embed_mode": "zembed" if EMBED_MODE else "local",
+      "embed_model": EMBED_MODEL_NAME,
     }
   )
   _INDEX_STATUS = "ready"
@@ -595,43 +494,61 @@ def run_index(
   return stats
 
 
-def ollama_post(path: str, payload: dict, retries: int = 3) -> dict:
-  for attempt in range(retries):
-    try:
-      url = f"{OLLAMA_BASE_URL}{path}"
-      response = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
-      if response.ok:
-        return response.json()
-      try:
-        detail = response.json()
-      except Exception:
-        detail = response.text
-      raise RuntimeError(f"Ollama error {response.status_code}: {detail}")
-    except (requests.exceptions.ConnectionError, RuntimeError) as e:
-      if attempt < retries - 1:
-        import time as _t; _t.sleep(3)
-      else:
-        raise HTTPException(status_code=502, detail=f"Ollama unavailable: {e}")
-  return {}
+# ── Ollama chat helper ────────────────────────────────────────────────────────
 
+def ollama_chat(messages: List[dict], model_override: Optional[str] = None) -> tuple[str, Optional[str]]:
+  """Send a chat request to the local Ollama instance.
 
-def ollama_chat(model: str, messages: List[dict]) -> tuple[str, Optional[str]]:
+  Uses Ollama's OpenAI-compatible endpoint so the message format is identical
+  to what the rest of the code already builds.
+
+  Args:
+    messages: list of {"role": ..., "content": ...} dicts.
+    model_override: if supplied, overrides OLLAMA_CHAT_MODEL for this call.
+
+  Returns:
+    (answer_text, model_name_used)
+
+  Raises:
+    HTTPException(502) if Ollama is unreachable.
+    HTTPException(status_code) for non-2xx responses from Ollama.
+  """
+  model = model_override or OLLAMA_CHAT_MODEL
+  url = f"{OLLAMA_BASE_URL.rstrip('/')}/v1/chat/completions"
   payload = {
     "model": model,
     "messages": messages,
+    "temperature": CHAT_TEMPERATURE,
     "stream": False,
-    "options": {"temperature": CHAT_TEMPERATURE},
   }
-  data = ollama_post("/chat", payload)
-  return data.get("message", {}).get("content", ""), data.get("model")
+  try:
+    resp = requests.post(
+      url,
+      json=payload,
+      headers={"Content-Type": "application/json"},
+      timeout=OLLAMA_TIMEOUT,
+    )
+  except requests.exceptions.ConnectionError as exc:
+    raise HTTPException(
+      status_code=502,
+      detail=f"Could not connect to Ollama at {OLLAMA_BASE_URL}. "
+             "Make sure Ollama is running (`ollama serve`).",
+    ) from exc
+  except requests.exceptions.Timeout as exc:
+    raise HTTPException(
+      status_code=504,
+      detail=f"Ollama request timed out after {OLLAMA_TIMEOUT}s.",
+    ) from exc
 
+  if not resp.ok:
+    raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
-# Per-agent chat functions
-chat_refiner   = lambda msgs: ollama_chat(REFINER_MODEL,   msgs)
-chat_generator = lambda msgs: ollama_chat(GENERATOR_MODEL, msgs)
-chat_evaluator = lambda msgs: ollama_chat(EVALUATOR_MODEL, msgs)
-chat_selector  = lambda msgs: ollama_chat(SELECTOR_MODEL,  msgs)
-chat_default   = lambda msgs: ollama_chat(OLLAMA_CHAT_MODEL, msgs)
+  data = resp.json()
+  content: str = data["choices"][0]["message"]["content"]
+  model_used: Optional[str] = data.get("model") or model
+  return content, model_used
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @app.get("/health")
@@ -642,6 +559,11 @@ def health():
     "chunking": "pdfium_sliding_window",
     "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
     "hardware_config_mtime": _INDEX_INFO.get("hardware_config_mtime"),
+    "embed_mode": "zembed" if EMBED_MODE else "local",
+    "embed_model": EMBED_MODEL_NAME,
+    "llm_backend": "ollama",
+    "ollama_base_url": OLLAMA_BASE_URL,
+    "ollama_chat_model": OLLAMA_CHAT_MODEL,
   }
 
 
@@ -706,6 +628,8 @@ def clear_index() -> None:
       "last_error": None,
       "chunking": "pdfium_sliding_window",
       "embed_batch_size": _ACTIVE_EMBED_BATCH_SIZE,
+      "embed_mode": "zembed" if EMBED_MODE else "local",
+      "embed_model": EMBED_MODEL_NAME,
     }
   )
 
@@ -833,13 +757,12 @@ def query(payload: QueryRequest):
       "Don't make up any new information:\n"
       f"{context_text}"
     )
-    naive_model = payload.chat_model or OLLAMA_CHAT_MODEL
     answer, model_used = ollama_chat(
-      naive_model,
       [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": payload.question},
       ],
+      payload.chat_model,
     )
     return QueryResponse(
       answer=answer,
@@ -861,16 +784,17 @@ def query(payload: QueryRequest):
     state["retrieved_meta"] = meta
     return hits
 
-  refiner = QueryRefiner(chat_fn=chat_refiner)
+  chat_fn = lambda messages: ollama_chat(messages, payload.chat_model)
+  refiner = QueryRefiner(chat_fn=chat_fn)
   retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
   selector = DynamicPassageSelector(
-    chat_fn=chat_selector,
+    chat_fn=chat_fn,
     max_passages=TOP_K_MAX,
     min_passages=TOP_K_MIN,
   ) if DPS_ENABLED else None
-  generator = Generator(chat_fn=chat_generator)
+  generator = Generator(chat_fn=chat_fn)
   evaluator = Evaluator(
-    chat_fn=chat_evaluator,
+    chat_fn=chat_fn,
     min_score=payload.min_score,
     max_attempts=payload.max_attempts,
   )
@@ -936,13 +860,12 @@ def query_stream(payload: QueryRequest):
         "Don't make up any new information:\n"
         f"{context_text}"
       )
-      naive_model = payload.chat_model or OLLAMA_CHAT_MODEL
       answer, model_used = ollama_chat(
-        naive_model,
         [
           {"role": "system", "content": system_prompt},
           {"role": "user", "content": payload.question},
         ],
+        payload.chat_model,
       )
       yield sse_event("answer", {"answer": answer, "model_used": model_used})
       yield sse_event(
@@ -975,22 +898,23 @@ def query_stream(payload: QueryRequest):
       state["retrieved_meta"] = meta
       return hits
 
-    refiner = QueryRefiner(chat_fn=chat_refiner)
+    chat_fn = lambda messages: ollama_chat(messages, payload.chat_model)
+    refiner = QueryRefiner(chat_fn=chat_fn)
     retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
     selector = DynamicPassageSelector(
-      chat_fn=chat_selector,
+      chat_fn=chat_fn,
       max_passages=TOP_K_MAX,
       min_passages=TOP_K_MIN,
     ) if DPS_ENABLED else None
-    generator = Generator(chat_fn=chat_generator)
+    generator = Generator(chat_fn=chat_fn)
     evaluator = Evaluator(
-      chat_fn=chat_evaluator,
+      chat_fn=chat_fn,
       min_score=payload.min_score,
       max_attempts=payload.max_attempts,
     )
 
     while state["should_retry"]:
-      # state = refiner.run(state)
+      state = refiner.run(state)
       for item in pending:
         yield sse_event("trace", item)
       pending.clear()
