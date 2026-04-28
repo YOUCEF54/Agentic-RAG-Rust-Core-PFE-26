@@ -537,13 +537,14 @@ fn simple_sliding_window(text: &str, max_chars: usize) -> Vec<String> {
     }
     chunks
 }
+use anyhow::Error;
 #[pyfunction]
 fn semantic_window_chunker_advanced(
     text: String,
     max_chars: usize,
     window_size: usize,
     threshold_percentile: f32,
-) -> PyResult<Vec<String>> {
+    ) -> PyResult<Vec<String>> {
     let stripped = strip_academic_header(&text);
     let sentences = split_sentences(stripped);
     if sentences.len() < window_size {
@@ -551,11 +552,19 @@ fn semantic_window_chunker_advanced(
     }
 
     // FIX E0639: Initialize non-exhaustive struct
-    let mut options = InitOptions::default();
-    options.model_name = EmbeddingModel::AllMiniLML6V2;
-    
-    let mut model = TextEmbedding::try_new(options)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let model_mutex = EMBEDDER.get_or_init(|| {
+        let mut options = InitOptions::default();
+        // options.model_name = EmbeddingModel::AllMiniLML6V2;
+        // options.model_name = EmbeddingModel::SnowflakeArcticEmbedXS; 
+        options.model_name = EmbeddingModel::MultilingualE5Small;
+        let m = TextEmbedding::try_new(options)
+            .expect("Failed to initialize FastEmbed model");
+        Mutex::new(m)
+    });
+    // 2. Verrouillage du Mutex et extraction du garde
+    let mut model_guard = model_mutex.lock().map_err(|e| {
+        PyRuntimeError::new_err(format!("Mutex lock failed: {}", e))
+    })?;
 
     // 1. Create Overlapping Windows
     let windows: Vec<String> = sentences
@@ -564,9 +573,8 @@ fn semantic_window_chunker_advanced(
         .collect();
 
     // 2. Embed Windows
-    let window_embeddings = model.embed(windows, None)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
+    let window_embeddings = model_guard.embed(windows, None)
+            .map_err(|e: anyhow::Error| PyRuntimeError::new_err(e.to_string()))?;
     // 3. Calculate "Distance" between consecutive windows
     let mut distances = Vec::new();
     for i in 0..window_embeddings.len() - 1 {
