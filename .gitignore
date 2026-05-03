@@ -41,6 +41,9 @@ data/~
 *.npz
 .fastembed_cache
 profiling
+benchmarks
+logs
+eval_logs
 *.rar
 /pdfs_lock
 /data

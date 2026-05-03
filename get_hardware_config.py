@@ -29,7 +29,7 @@ import rag_rust
 # ========================= CONFIG =========================
 # Quick mode is now the default for API usage.
 QUICK_NUM_CHUNKS_TO_TEST = 64
-QUICK_BATCH_SIZES = [4, 8, 16, 24, 32]
+QUICK_BATCH_SIZES = [2, 4, 8, 16, 24, 32]
 QUICK_REPEATS = 2
 def _truthy_env(name: str) -> bool:
   """Parse env vars like '1', 'true', 'yes', 'on', 'zembed' as True."""
@@ -82,7 +82,7 @@ def run_hardware_calibration(
   early_stop_on_drop: bool = True,
   drop_tolerance_ratio: float = 0.0,
   quick_mode: bool = True,
-  max_runtime_seconds: float = 25.0,
+  max_runtime_seconds: float = 120.0,
 ) -> Dict[str, Any]:
   num_chunks = QUICK_NUM_CHUNKS_TO_TEST if quick_mode else FULL_NUM_CHUNKS_TO_TEST
   batch_sizes = QUICK_BATCH_SIZES if quick_mode else FULL_BATCH_SIZES

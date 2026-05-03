@@ -48,10 +48,26 @@ fn get_runtime() -> &'static Runtime {
 
 // added (local-embed)
 fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
+    let _ = dotenvy::dotenv();
+    
+    // 1. Get the model name from env, defaulting to BGE if not set
+    let model_name_str = std::env::var("EMBED_MODEL")
+        .unwrap_or_else(|_| "BGESmallENV15".to_string());
+
     EMBEDDER.get_or_try_init(|| {
         std::env::set_var("TOKENIZERS_PARALLELISM", "false");
-        let options = InitOptions::new(EmbeddingModel::BGELargeENV15)
+
+        // 2. Map the string to the fastembed Enum
+        let model_enum = match model_name_str.as_str() {
+            "BGELargeENV15" => EmbeddingModel::BGELargeENV15,
+            "MultilingualE5Small" => EmbeddingModel::MultilingualE5Small,
+            "AllMiniLML6V2" => EmbeddingModel::AllMiniLML6V2,
+            _ => return Err(format!("Unsupported model name: {}", model_name_str)),
+        };
+
+        let options = InitOptions::new(model_enum)
             .with_show_download_progress(false);
+
         TextEmbedding::try_new(options)
             .map(Mutex::new)
             .map_err(|e| format!("Fastembed init failed: {e:?}"))

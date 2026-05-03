@@ -1,15 +1,15 @@
 {
-    "optimal_batch_size": 4,
-    "throughput_measured": 13.66,
-    "calibration_date": "2026-04-27 10:26:31",
-    "cpu_info": "Intel64 Family 6 Model 142 Stepping 10, GenuineIntel",
+    "optimal_batch_size": 2,
+    "throughput_measured": 22.86,
+    "calibration_date": "2026-05-03 14:00:35",
+    "cpu_info": "Intel64 Family 6 Model 94 Stepping 3, GenuineIntel",
     "quick_mode": true,
     "num_chunks_tested": 64,
     "repeats": 2,
     "max_runtime_seconds": 25.0,
     "tested_batch_sizes": [
-        4,
-        8
+        2,
+        4
     ],
-    "stop_reason": "Stopped early at batch size 8: throughput dropped from best 13.66 to 13.21 chunks/sec."
+    "stop_reason": "Stopped early at batch size 4: throughput dropped from best 22.86 to 19.62 chunks/sec."
 }
