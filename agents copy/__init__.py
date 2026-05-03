@@ -1,5 +1,5 @@
 from .base import Agent
-from .evaluator import CRAGEvaluator, Evaluator
+from .evaluator import Evaluator
 from .generator import Generator
 from .refiner import QueryRefiner
 from .retriever import Retriever
@@ -12,7 +12,6 @@ __all__ = [
     "Retriever",
     "DynamicPassageSelector",
     "Generator",
-    "CRAGEvaluator",
     "Evaluator",
     "QueryRefiner",
 ]

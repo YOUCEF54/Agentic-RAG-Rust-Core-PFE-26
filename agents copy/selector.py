@@ -6,8 +6,6 @@ from .base import Agent
 class DynamicPassageSelector(Agent):
     """
     Zero-shot DPS: select a variable-length subset from Top-N retrieved passages.
-    Only passages the LLM judges as directly relevant to the query are kept,
-    up to max_passages. Falls back to top min-passages on any error.
     """
 
     def __init__(self, chat_fn, max_passages: int = 8, min_passages: int = 1):
@@ -40,8 +38,8 @@ class DynamicPassageSelector(Agent):
 
     def _parse_indices(self, response: str, n_candidates: int) -> list[int]:
         raw_numbers = re.findall(r"\b(\d+)\b", response)
-        indices: list[int] = []
-        seen: set[int] = set()
+        indices = []
+        seen = set()
         for num_str in raw_numbers:
             idx = int(num_str)
             if 1 <= idx <= n_candidates and idx not in seen:
@@ -51,7 +49,8 @@ class DynamicPassageSelector(Agent):
                 break
 
         if not indices:
-            indices = list(range(1, min(self.min_passages + 2, n_candidates + 1)))
+            indices = list(range(1, min(3, n_candidates) + 1))
+
         return indices
 
     def run(self, state: dict) -> dict:
@@ -63,36 +62,34 @@ class DynamicPassageSelector(Agent):
 
         query = state.get("refined_query") or state["query"]
         prompt = self._build_prompt(query, candidates)
-
-        model_used = None
-        selected_indices = None
-        fallback = False
+        messages = [{"role": "user", "content": prompt}]
 
         try:
-            response, model_used = self.chat_fn([{"role": "user", "content": prompt}])
+            response, model_used = self.chat_fn(messages)
             selected_indices = self._parse_indices(response, len(candidates))
         except Exception as e:
-            fallback = True
             selected_indices = list(range(1, min(3, len(candidates)) + 1))
-            Agent._trace(state, self.name, f"Selection LLM call failed ({e}), falling back to top-3.")
+            model_used = None
+            Agent._trace(state, self.name, f"Selection failed ({e}), falling back to top-3.")
 
         selected_chunks = [candidates[i - 1] for i in selected_indices]
+
         state["chunks"] = selected_chunks
         state["dps_selected_indices"] = selected_indices
         state["dps_n_candidates"] = len(candidates)
-        if model_used is not None:
-            state.setdefault("models", {})["selector"] = model_used
+
+        models = state.setdefault("models", {})
+        models["selector"] = model_used
 
         Agent._trace(
             state,
             self.name,
-            f"{'[fallback] ' if fallback else ''}Selected {len(selected_chunks)} of {len(candidates)} passages.",
+            f"Selected {len(selected_chunks)} of {len(candidates)} passages.",
             {
                 "query": query,
                 "selected_indices": selected_indices,
                 "selected_sources": [(s, p) for _, s, p, _ in selected_chunks],
                 "model_used": model_used,
-                "fallback": fallback,
             },
         )
         return state

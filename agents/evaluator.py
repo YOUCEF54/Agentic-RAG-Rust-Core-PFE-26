@@ -1,109 +1,169 @@
+import json
 import re
-
-from utils.stop_words import stop_words
+from typing import Any
 
 from .base import Agent
 
 
-class Evaluator(Agent):
-    def __init__(self, chat_fn, min_score: float = 0.7, max_attempts: int = 3):
-        super().__init__("Evaluator")
+class CRAGEvaluator(Agent):
+    """
+    Lightweight CRAG evaluator.
+    Scores selected internal passages and classifies retrieval quality into:
+    - Correct
+    - Ambiguous
+    - Incorrect
+    """
+
+    def __init__(
+        self,
+        chat_fn,
+        correct_threshold: float = 0.75,
+        ambiguous_threshold: float = 0.45,
+    ):
+        super().__init__("CRAGEvaluator")
         self.chat_fn = chat_fn
-        self.min_score = min_score
-        self.max_attempts = max_attempts
+        self.correct_threshold = float(correct_threshold)
+        self.ambiguous_threshold = float(ambiguous_threshold)
 
-    def _faithfulness_precheck(self, answer: str, chunks: list) -> float | None:
-        answer_tokens = set(answer.lower().split())
-        stopwords = set(stop_words)
-        answer_tokens -= stopwords
-        if not answer_tokens:
-            return 0.0
+    @staticmethod
+    def _chunk_text(item: Any) -> str:
+        if isinstance(item, tuple) and item:
+            return str(item[0])
+        return str(item)
 
-        all_chunk_tokens: set[str] = set()
-        for item in chunks:
-            text = item[0] if isinstance(item, tuple) else item
-            all_chunk_tokens.update(text.lower().split())
-        all_chunk_tokens -= stopwords
+    @staticmethod
+    def _normalize_label(label: str) -> str:
+        normalized = (label or "").strip().lower()
+        if normalized in {"correct", "high", "high_confidence"}:
+            return "Correct"
+        if normalized in {"incorrect", "low", "low_confidence"}:
+            return "Incorrect"
+        return "Ambiguous"
 
-        if not all_chunk_tokens:
-            return None
+    @staticmethod
+    def _clamp(v: Any, default: float = 0.0) -> float:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, f))
 
-        overlap = len(answer_tokens & all_chunk_tokens) / len(answer_tokens)
-        if overlap < 0.15:
-            return 0.0
-        return None
-
-    def _score(self, query: str, answer: str, chunks: list) -> tuple[float, str, str | None]:
-        if not answer.strip():
-            return 0.0, "Empty answer.", None
-
-        precheck = self._faithfulness_precheck(answer, chunks)
-        if precheck is not None:
-            return precheck, "Failed token-overlap faithfulness check.", None
-
-        context = "\n\n".join(
-            f"[Chunk {i+1}]:\n{text}"
-            for i, (text, *_) in enumerate(chunks)
-        )
-        eval_message = (
-            "You are a strict auditor. Compare the Generated Answer to the Retrieved Context only.\n\n"
-            "Tasks:\n"
-            "1. FAITHFULNESS: Is every claim in the answer supported by the context? "
-            "If any claim is not in the context, it is a hallucination.\n"
-            "2. RELEVANCE: Does the answer address the question?\n\n"
-            f"Question: {query}\n\n"
-            f"Retrieved Context:\n{context}\n\n"
-            f"Generated Answer:\n{answer}\n\n"
-            "Respond with exactly two lines:\n"
-            "SUMMARY: <one sentence>\n"
-            "SCORE: <float 0.0-1.0>"
-        )
-        messages = [{"role": "user", "content": eval_message}]
+    def _parse_eval(self, raw: str) -> tuple[str, float, float, str]:
+        default = ("Ambiguous", 0.5, 0.5, "Could not parse evaluator output reliably.")
 
         try:
-            llm_response, model_used = self.chat_fn(messages)
-            summary = "No summary provided"
-            for line in llm_response.strip().splitlines():
-                if re.search(r"(?i)^\s*\*?\*?SUMMARY", line):
-                    parts = re.split(r":", line, maxsplit=1)
-                    if len(parts) > 1:
-                        summary = parts[1].strip("* ")
-                    else:
-                        summary = line.strip("* ")
-                    break
-            match = re.search(r"(?i)SCORE[\s\*:]*(0\.\d+|1\.0|0|1)", llm_response)
-            if match:
-                score = float(match.group(1))
-            else:
-                all_numbers = re.findall(r"(0\.\d+|1\.0|[01])", llm_response)
-                score = float(all_numbers[-1]) if all_numbers else 0.0
-            summary = "No summary provided"
-            if "SUMMARY:" in llm_response.upper():
-                summary = llm_response.upper().split("SUMMARY:")[1].split("\n")[0].strip()
+            payload = json.loads(raw.strip())
+            if isinstance(payload, dict):
+                label = self._normalize_label(str(payload.get("classification") or payload.get("label") or ""))
+                confidence = self._clamp(payload.get("confidence"), 0.5)
+                relevance = self._clamp(payload.get("relevance_score"), 0.5)
+                reason = str(payload.get("reason") or payload.get("summary") or "No reason provided.")
+                return label, confidence, relevance, reason
+        except Exception:
+            pass
 
-            return max(0.0, min(1.0, score)), summary, model_used
-        except Exception as e:
-            return 0.0, f"Evaluation failed: {e}", None
+        cls_match = re.search(r"(?i)(classification|label)\s*[:=]\s*(correct|incorrect|ambiguous)", raw)
+        conf_match = re.search(r"(?i)confidence\s*[:=]\s*([0-9]*\.?[0-9]+)", raw)
+        rel_match = re.search(r"(?i)(relevance_score|score)\s*[:=]\s*([0-9]*\.?[0-9]+)", raw)
+        reason_match = re.search(r"(?i)reason\s*[:=]\s*(.+)", raw)
+
+        if not cls_match and not conf_match and not rel_match:
+            return default
+
+        label = self._normalize_label(cls_match.group(2) if cls_match else "Ambiguous")
+        confidence = self._clamp(conf_match.group(1) if conf_match else 0.5, 0.5)
+        relevance = self._clamp(rel_match.group(2) if rel_match else 0.5, 0.5)
+        reason = reason_match.group(1).strip() if reason_match else "Parsed from non-JSON evaluator output."
+        return label, confidence, relevance, reason
+
+    def _deterministic_classification(self, relevance_score: float) -> str:
+        if relevance_score >= self.correct_threshold:
+            return "Correct"
+        if relevance_score < self.ambiguous_threshold:
+            return "Incorrect"
+        return "Ambiguous"
 
     def run(self, state: dict) -> dict:
-        state["attempts"] += 1
-        score, summary, model_used = self._score(state["query"], state["answer"], state["chunks"])
-        state["score"] = score
-        state["judge_summary"] = summary
-        models = state.setdefault("models", {})
-        models["evaluator"] = model_used
+        state["attempts"] = int(state.get("attempts", 0)) + 1
 
-        state["should_retry"] = (state["score"] < self.min_score) and (state["attempts"] < self.max_attempts)
+        query = state.get("refined_query") or state["query"]
+        chunks = state.get("chunks", [])
+
+        if not chunks:
+            state["score"] = 0.0
+            state["crag_relevance_score"] = 0.0
+            state["crag_confidence"] = 1.0
+            state["crag_status"] = "Incorrect"
+            state["crag_reason"] = "No internal passages were selected by retriever/selector."
+            state["judge_summary"] = state["crag_reason"]
+            state["should_retry"] = False
+            Agent._trace(
+                state,
+                self.name,
+                "CRAG evaluation: no internal context available.",
+                {
+                    "status": state["crag_status"],
+                    "relevance_score": state["crag_relevance_score"],
+                    "confidence": state["crag_confidence"],
+                },
+            )
+            return state
+
+        packed_context = "\n\n".join(
+            f"[Passage {i + 1}]\n{self._chunk_text(c)[:900]}"
+            for i, c in enumerate(chunks)
+        )
+
+        prompt = (
+            "You are a CRAG evaluator for retrieval quality.\n"
+            "Assess whether the selected passages are sufficient and relevant for answering the question.\n\n"
+            "Return STRICT JSON with keys:\n"
+            "- classification: Correct | Ambiguous | Incorrect\n"
+            "- confidence: float 0..1\n"
+            "- relevance_score: float 0..1\n"
+            "- reason: one short sentence\n\n"
+            f"Question:\n{query}\n\n"
+            f"Selected Passages:\n{packed_context}"
+        )
+
+        model_used = None
+        try:
+            raw, model_used = self.chat_fn([{"role": "user", "content": prompt}])
+            llm_label, confidence, relevance_score, reason = self._parse_eval(raw)
+        except Exception as exc:
+            llm_label = "Ambiguous"
+            confidence = 0.5
+            relevance_score = 0.5
+            reason = f"Evaluator call failed: {exc}"
+
+        routed_label = self._deterministic_classification(relevance_score)
+
+        state["score"] = relevance_score
+        state["crag_relevance_score"] = relevance_score
+        state["crag_confidence"] = confidence
+        state["crag_status"] = routed_label
+        state["crag_reason"] = reason
+        state["judge_summary"] = reason
+        state["should_retry"] = False
+        state.setdefault("models", {})["evaluator"] = model_used
+
         Agent._trace(
             state,
             self.name,
-            "Evaluated answer quality.",
+            "CRAG evaluation complete.",
             {
-                "score": state["score"],
-                "summary": summary,
+                "llm_classification": llm_label,
+                "routed_classification": routed_label,
+                "relevance_score": relevance_score,
+                "confidence": confidence,
+                "reason": reason,
+                "correct_threshold": self.correct_threshold,
+                "ambiguous_threshold": self.ambiguous_threshold,
                 "model_used": model_used,
-                "should_retry": state["should_retry"],
-                "attempts": state["attempts"],
             },
         )
         return state
+
+
+# Backward compatibility for existing imports.
+Evaluator = CRAGEvaluator

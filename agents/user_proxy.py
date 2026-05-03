@@ -2,34 +2,39 @@ from .base import Agent
 
 
 class UserProxy(Agent):
-    def __init__(self, refiner, retriever, selector, generator, evaluator):
+    def __init__(self, retriever, selector, evaluator, generator):
         super().__init__("UserProxy")
-        self.refiner = refiner
         self.retriever = retriever
         self.selector = selector
-        self.generator = generator
         self.evaluator = evaluator
+        self.generator = generator
 
-    def _run_once(self, state: dict) -> dict:
-        state = self.refiner.run(state)
+    def run(self, state: dict) -> dict:
+        Agent._trace(state, self.name, "Starting CRAG pipeline run.")
+
         state = self.retriever.run(state)
         if self.selector is not None:
             state = self.selector.run(state)
-        state = self.generator.run(state)
+
         state = self.evaluator.run(state)
-        return state
 
-    def run(self, state: dict) -> dict:
-        Agent._trace(state, self.name, "Starting agentic run.")
-        state = self._run_once(state)
+        if state.get("crag_status") in {"Incorrect", "Ambiguous"} and state.get("crag_enable_external_route", True):
+            state = self.retriever.run_external(state)
+        else:
+            state["external_chunks"] = []
+            state["external_retrieved_meta"] = []
 
-        while state["should_retry"]:
-            Agent._trace(
-                state,
-                self.name,
-                "Retrying due to low evaluator score.",
-                {"attempts": state.get("attempts"), "score": state.get("score")},
-            )
-            state = self._run_once(state)
+        state = self.generator.run(state)
+        state["should_retry"] = False
 
+        Agent._trace(
+            state,
+            self.name,
+            "CRAG pipeline complete.",
+            {
+                "crag_status": state.get("crag_status"),
+                "generation_route": state.get("generation_route"),
+                "score": state.get("score"),
+            },
+        )
         return state

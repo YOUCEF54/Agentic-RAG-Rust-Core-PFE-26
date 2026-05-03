@@ -30,7 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)  # 🔑 Forces reload even if var is already set
 # Bootstrap the pyo3 extension on Windows when the repo contains the built DLL
 # but the Python importable .pyd isn't present yet.
 _RAG_RUST_PYD = Path(__file__).with_name("rag_rust.pyd")
@@ -47,7 +47,13 @@ if not _RAG_RUST_PYD.exists():
       break
 
 import rag_rust
-from agents import Evaluator, Generator, QueryRefiner, Retriever, UserProxy, DynamicPassageSelector
+from agents import (
+  CRAGEvaluator,
+  DynamicPassageSelector,
+  Generator,
+  Retriever,
+  UserProxy,
+)
 from get_hardware_config import load_hardware_config, run_hardware_calibration
 
 APP_NAME = "Agentic-RAG-Rust-Core-PFE-26"
@@ -115,8 +121,8 @@ OLLAMA_TIMEOUT = get_env_int("OLLAMA_TIMEOUT", 300)
 OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "phi4-mini:3.8b")
 CHAT_TEMPERATURE = get_env_float("CHAT_TEMPERATURE", 0.2)
 _API_TYPE_RAW = os.getenv("API_TYPE")
-API_TYPE = normalize_api_type(_API_TYPE_RAW)
 print("API_TYPE: ",_API_TYPE_RAW)
+API_TYPE = normalize_api_type(_API_TYPE_RAW)
 print("API_TYPE: ",API_TYPE)
 print(f"[startup] API_TYPE raw={_API_TYPE_RAW!r} resolved={API_TYPE!r}")
 
@@ -139,6 +145,14 @@ DPS_ENABLED     = True
 TOP_N_RETRIEVAL = 15    # candidates fetched from vector DB
 TOP_K_MAX       = 8     # hard ceiling for DPS
 TOP_K_MIN       = 1     # hard floor for DPS
+
+# CRAG defaults
+CRAG_CORRECT_THRESHOLD = get_env_float("CRAG_CORRECT_THRESHOLD", 0.75)
+CRAG_AMBIGUOUS_THRESHOLD = get_env_float("CRAG_AMBIGUOUS_THRESHOLD", 0.45)
+CRAG_EXTERNAL_TOP_K = get_env_int("CRAG_EXTERNAL_TOP_K", 5)
+CRAG_ENABLE_EXTERNAL_ROUTE = (
+  True if os.getenv("CRAG_ENABLE_EXTERNAL_ROUTE") is None else is_truthy_env("CRAG_ENABLE_EXTERNAL_ROUTE")
+)
 
 app = FastAPI(title=APP_NAME)
 
@@ -205,6 +219,10 @@ class QueryRequest(BaseModel):
   return_trace: bool = True
   min_score: float = 0.7
   max_attempts: int = 3
+  crag_correct_threshold: float = CRAG_CORRECT_THRESHOLD
+  crag_ambiguous_threshold: float = CRAG_AMBIGUOUS_THRESHOLD
+  crag_external_top_k: int = CRAG_EXTERNAL_TOP_K
+  crag_enable_external_route: bool = CRAG_ENABLE_EXTERNAL_ROUTE
 
 
 class QueryResponse(BaseModel):
@@ -217,6 +235,10 @@ class QueryResponse(BaseModel):
   attempts: Optional[int] = None
   trace: Optional[List[dict]] = None
   models: Optional[Dict[str, Optional[str]]] = None
+  crag_status: Optional[str] = None
+  crag_confidence: Optional[float] = None
+  crag_reason: Optional[str] = None
+  external_retrieved: Optional[List[dict]] = None
 
 
 class DocumentMeta(BaseModel):
@@ -932,8 +954,9 @@ def query(payload: QueryRequest):
   state: Dict[str, Any] = {
     "query": payload.question,
     "attempts": 0,
-    "should_retry": True,
+    "should_retry": False,
     "trace": [] if payload.return_trace else None,
+    "crag_enable_external_route": bool(payload.crag_enable_external_route),
   }
 
   def retrieve_for_agent(q: str, top_k: int) -> List[tuple]:
@@ -941,8 +964,7 @@ def query(payload: QueryRequest):
     state["retrieved_meta"] = meta
     return hits
 
-  chat_refiner, chat_generator, chat_evaluator, chat_selector = build_agent_chat_fns(payload.chat_model)
-  refiner = QueryRefiner(chat_fn=chat_refiner)
+  _, chat_generator, chat_evaluator, chat_selector = build_agent_chat_fns(payload.chat_model)
   retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
   selector = DynamicPassageSelector(
     chat_fn=chat_selector,
@@ -950,15 +972,17 @@ def query(payload: QueryRequest):
     min_passages=TOP_K_MIN,
   ) if DPS_ENABLED else None
   generator = Generator(chat_fn=chat_generator)
-  evaluator = Evaluator(
+  evaluator = CRAGEvaluator(
     chat_fn=chat_evaluator,
-    min_score=payload.min_score,
-    max_attempts=payload.max_attempts,
+    correct_threshold=payload.crag_correct_threshold,
+    ambiguous_threshold=payload.crag_ambiguous_threshold,
   )
-  proxy = UserProxy(refiner, retriever, selector, generator, evaluator)
+  retriever.external_top_k = int(payload.crag_external_top_k)
+  proxy = UserProxy(retriever, selector, evaluator, generator)
   state = proxy.run(state)
 
   retrieved = state.get("retrieved_meta") or []
+  external_retrieved = state.get("external_retrieved_meta") or []
 
   return QueryResponse(
     answer=state.get("answer"),
@@ -970,6 +994,10 @@ def query(payload: QueryRequest):
     attempts=state.get("attempts"),
     trace=state.get("trace") if payload.return_trace else None,
     models=state.get("models"),
+    crag_status=state.get("crag_status"),
+    crag_confidence=state.get("crag_confidence"),
+    crag_reason=state.get("crag_reason"),
+    external_retrieved=external_retrieved,
   )
 
 
@@ -1046,9 +1074,10 @@ def query_stream(payload: QueryRequest):
       state: Dict[str, Any] = {
         "query": payload.question,
         "attempts": 0,
-        "should_retry": True,
+        "should_retry": False,
         "trace": [] if payload.return_trace else None,
         "emit": emit,
+        "crag_enable_external_route": bool(payload.crag_enable_external_route),
       }
 
       def retrieve_for_agent(q: str, top_k: int) -> List[tuple]:
@@ -1056,67 +1085,63 @@ def query_stream(payload: QueryRequest):
         state["retrieved_meta"] = meta
         return hits
 
-      chat_refiner, chat_generator, chat_evaluator, chat_selector = build_agent_chat_fns(payload.chat_model)
-      refiner = QueryRefiner(chat_fn=chat_refiner)
+      _, chat_generator, chat_evaluator, chat_selector = build_agent_chat_fns(payload.chat_model)
       retriever = Retriever(retrieve_fn=lambda q, top_k: retrieve_for_agent(q, top_k), top_k=payload.top_k, top_n=TOP_N_RETRIEVAL)
+      retriever.external_top_k = int(payload.crag_external_top_k)
       selector = DynamicPassageSelector(
         chat_fn=chat_selector,
         max_passages=TOP_K_MAX,
         min_passages=TOP_K_MIN,
       ) if DPS_ENABLED else None
       generator = Generator(chat_fn=chat_generator)
-      evaluator = Evaluator(
+      evaluator = CRAGEvaluator(
         chat_fn=chat_evaluator,
-        min_score=payload.min_score,
-        max_attempts=payload.max_attempts,
+        correct_threshold=payload.crag_correct_threshold,
+        ambiguous_threshold=payload.crag_ambiguous_threshold,
       )
 
-      while state["should_retry"]:
-        state = refiner.run(state)
+      state = retriever.run(state)
+      for item in pending:
+        yield sse_event("trace", item)
+      pending.clear()
+      yield sse_event("retrieved", {"items": state.get("retrieved_meta") or []})
+
+      if selector is not None:
+        state = selector.run(state)
         for item in pending:
           yield sse_event("trace", item)
         pending.clear()
 
-        state = retriever.run(state)
+      state = evaluator.run(state)
+      for item in pending:
+        yield sse_event("trace", item)
+      pending.clear()
+      yield sse_event(
+        "evaluation",
+        {
+          "score": state.get("score"),
+          "summary": state.get("judge_summary"),
+          "crag_status": state.get("crag_status"),
+          "crag_confidence": state.get("crag_confidence"),
+          "attempts": state.get("attempts"),
+        },
+      )
+
+      if state.get("crag_status") in {"Incorrect", "Ambiguous"} and state.get("crag_enable_external_route", True):
+        state = retriever.run_external(state)
         for item in pending:
           yield sse_event("trace", item)
         pending.clear()
-        yield sse_event("retrieved", {"items": state.get("retrieved_meta") or []})
+        yield sse_event("external_retrieved", {"items": state.get("external_retrieved_meta") or []})
+      else:
+        state["external_chunks"] = []
+        state["external_retrieved_meta"] = []
 
-        if selector is not None:
-          state = selector.run(state)
-          for item in pending:
-            yield sse_event("trace", item)
-          pending.clear()
-
-        state = generator.run(state)
-        for item in pending:
-          yield sse_event("trace", item)
-        pending.clear()
-        yield sse_event("answer", {"answer": state.get("answer"), "model_used": state.get("model_used")})
-
-        state = evaluator.run(state)
-        for item in pending:
-          yield sse_event("trace", item)
-        pending.clear()
-        yield sse_event(
-          "evaluation",
-          {
-            "score": state.get("score"),
-            "summary": state.get("judge_summary"),
-            "should_retry": state.get("should_retry"),
-            "attempts": state.get("attempts"),
-          },
-        )
-
-        if state.get("should_retry"):
-          yield sse_event(
-            "retry",
-            {
-              "attempts": state.get("attempts"),
-              "score": state.get("score"),
-            },
-          )
+      state = generator.run(state)
+      for item in pending:
+        yield sse_event("trace", item)
+      pending.clear()
+      yield sse_event("answer", {"answer": state.get("answer"), "model_used": state.get("model_used")})
 
       final_payload = QueryResponse(
         answer=state.get("answer"),
@@ -1128,6 +1153,10 @@ def query_stream(payload: QueryRequest):
         attempts=state.get("attempts"),
         trace=state.get("trace") if payload.return_trace else None,
         models=state.get("models"),
+        crag_status=state.get("crag_status"),
+        crag_confidence=state.get("crag_confidence"),
+        crag_reason=state.get("crag_reason"),
+        external_retrieved=state.get("external_retrieved_meta") or [],
       )
       yield sse_event("final", final_payload.model_dump())
     except HTTPException as exc:

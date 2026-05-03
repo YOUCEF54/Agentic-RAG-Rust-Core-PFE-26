@@ -1117,6 +1117,8 @@ fn lancedb_search_filtered(
 }
 
 
+
+
 #[pymodule]
 fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_embed_model_zembed, m)?)?;
