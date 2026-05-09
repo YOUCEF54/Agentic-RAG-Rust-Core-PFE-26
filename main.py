@@ -146,6 +146,11 @@ TOP_N_RETRIEVAL = 15    # candidates fetched from vector DB
 TOP_K_MAX       = 8     # hard ceiling for DPS
 TOP_K_MIN       = 1     # hard floor for DPS
 
+# Dartboard re-ranking (Pickett et al., 2025 — arXiv:2407.12101)
+# Replaces MMR: diversity emerges from optimising relevant information gain.
+DARTBOARD_ENABLED = is_truthy_env("DARTBOARD_ENABLED")    # default OFF — set DARTBOARD_ENABLED=1 in .env
+DARTBOARD_SIGMA   = get_env_float("DARTBOARD_SIGMA", 0.1) # σ: Gaussian spread — paper best ≈ 0.096
+
 # CRAG defaults
 CRAG_CORRECT_THRESHOLD = get_env_float("CRAG_CORRECT_THRESHOLD", 0.75)
 CRAG_AMBIGUOUS_THRESHOLD = get_env_float("CRAG_AMBIGUOUS_THRESHOLD", 0.45)
@@ -223,6 +228,7 @@ class QueryRequest(BaseModel):
   crag_ambiguous_threshold: float = CRAG_AMBIGUOUS_THRESHOLD
   crag_external_top_k: int = CRAG_EXTERNAL_TOP_K
   crag_enable_external_route: bool = CRAG_ENABLE_EXTERNAL_ROUTE
+  dartboard_sigma: Optional[float] = None  # override DARTBOARD_SIGMA per-request; None = use server default
 
 
 class QueryResponse(BaseModel):
@@ -903,23 +909,49 @@ def query(payload: QueryRequest):
     raise HTTPException(status_code=400, detail="Index not built. Call /index first.")
 
   def retrieve_chunks_with_meta(query: str, top_k: int) -> tuple[List[tuple], List[Dict[str, Any]]]:
+    """
+    Embed query → lancedb_search (enlarged candidate pool)
+    → optional Dartboard re-rank → return top_k.
+
+    Dartboard (Pickett et al., 2025) maximises relevant information gain so that
+    diversity emerges organically — no explicit diversity/relevance trade-off.
+    When disabled: plain lancedb_search, identical to previous behaviour.
+    """
+    DARTBOARD_OVERSAMPLE = 3
     query_vector = embed_query(query)
-    try:
-      hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, top_k)
-    except Exception as exc:
-      raise HTTPException(status_code=500, detail=f"LanceDB search failed: {exc}") from exc
+    effective_sigma = (
+      payload.dartboard_sigma if payload.dartboard_sigma is not None else DARTBOARD_SIGMA
+    )
+    use_dartboard = DARTBOARD_ENABLED and effective_sigma > 0.0
+
+    if use_dartboard:
+      fetch_n = min(top_k * DARTBOARD_OVERSAMPLE, 50)
+      try:
+        raw_hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, fetch_n)
+      except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LanceDB search failed: {exc}") from exc
+      if len(raw_hits) == 0:
+        return [], []
+      cand_texts   = [text for text, _, _, _ in raw_hits]
+      cand_vectors = embed_texts(cand_texts)
+      selected_indices = rag_rust.dartboard_rerank(
+        query_vector,
+        cand_vectors,
+        top_k,
+        effective_sigma,
+      )
+      hits = [raw_hits[i] for i in selected_indices]
+    else:
+      try:
+        hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, top_k)
+      except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LanceDB search failed: {exc}") from exc
+
     chunks: List[tuple] = []
     meta: List[Dict[str, Any]] = []
     for text, source, page, dist in hits:
       chunks.append((text, source, page, dist))
-      meta.append(
-        {
-          "text": text,
-          "distance": dist,
-          "source": source,
-          "page": page,
-        }
-      )
+      meta.append({"text": text, "distance": dist, "source": source, "page": page})
     return chunks, meta
 
   if not payload.use_llm:
@@ -1007,23 +1039,49 @@ def query_stream(payload: QueryRequest):
     raise HTTPException(status_code=400, detail="Index not built. Call /index first.")
 
   def retrieve_chunks_with_meta(query: str, top_k: int) -> tuple[List[tuple], List[Dict[str, Any]]]:
+    """
+    Embed query → lancedb_search (enlarged candidate pool)
+    → optional Dartboard re-rank → return top_k.
+
+    Dartboard (Pickett et al., 2025) maximises relevant information gain so that
+    diversity emerges organically — no explicit diversity/relevance trade-off.
+    When disabled: plain lancedb_search, identical to previous behaviour.
+    """
+    DARTBOARD_OVERSAMPLE = 3
     query_vector = embed_query(query)
-    try:
-      hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, top_k)
-    except Exception as exc:
-      raise HTTPException(status_code=500, detail=f"LanceDB search failed: {exc}") from exc
+    effective_sigma = (
+      payload.dartboard_sigma if payload.dartboard_sigma is not None else DARTBOARD_SIGMA
+    )
+    use_dartboard = DARTBOARD_ENABLED and effective_sigma > 0.0
+
+    if use_dartboard:
+      fetch_n = min(top_k * DARTBOARD_OVERSAMPLE, 50)
+      try:
+        raw_hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, fetch_n)
+      except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LanceDB search failed: {exc}") from exc
+      if len(raw_hits) == 0:
+        return [], []
+      cand_texts   = [text for text, _, _, _ in raw_hits]
+      cand_vectors = embed_texts(cand_texts)
+      selected_indices = rag_rust.dartboard_rerank(
+        query_vector,
+        cand_vectors,
+        top_k,
+        effective_sigma,
+      )
+      hits = [raw_hits[i] for i in selected_indices]
+    else:
+      try:
+        hits = rag_rust.lancedb_search(DB_DIR, TABLE_NAME, query_vector, top_k)
+      except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LanceDB search failed: {exc}") from exc
+
     chunks: List[tuple] = []
     meta: List[Dict[str, Any]] = []
     for text, source, page, dist in hits:
       chunks.append((text, source, page, dist))
-      meta.append(
-        {
-          "text": text,
-          "distance": dist,
-          "source": source,
-          "page": page,
-        }
-      )
+      meta.append({"text": text, "distance": dist, "source": source, "page": page})
     return chunks, meta
 
   def event_stream() -> Iterable[str]:

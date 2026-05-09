@@ -29,6 +29,8 @@ use std::env; // added
 use dotenvy::dotenv; // added
 
 
+mod dartboard;   // Dartboard re-ranking — src/dartboard.rs
+
 const MIN_CHUNK_CHARS: usize = 80;
 static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new(); // added
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -1135,5 +1137,7 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lancedb_search_filtered, m)?)?;
     m.add_function(wrap_pyfunction!(load_pdf_pages_pdfium_many, m)?)?;
     m.add_function(wrap_pyfunction!(extract_visual_elements, m)?)?;
+    // Dartboard re-ranking (replaces MMR — see src/dartboard.rs)
+    m.add_function(wrap_pyfunction!(dartboard::dartboard_rerank, m)?)?;
     Ok(())
 }

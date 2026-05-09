@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Configuration
-PDF_PATH = "pdfs/2603.07379v1.pdf"
+PDF_PATH = "pdfs_lock/2603.08036v2.pdf"
 OUTPUT_BASE = "extracted_images_with_context"
 METADATA_DIR = os.path.join(OUTPUT_BASE, "metadata")
 IMAGES_DIR = os.path.join(OUTPUT_BASE, "images")

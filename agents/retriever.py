@@ -16,11 +16,11 @@ class Retriever(Agent):
         external_top_k: int = 5,
     ):
         super().__init__("Retriever")
-        self.retrieve_fn = retrieve_fn
-        self.top_k = top_k
-        self.top_n = top_n or top_k
+        self.retrieve_fn    = retrieve_fn
+        self.top_k          = top_k
+        self.top_n          = top_n or top_k
         self.external_top_k = max(1, int(external_top_k))
-        self.web_search_fn = web_search_fn or self._tavily_web_search
+        self.web_search_fn  = web_search_fn or self._tavily_web_search
 
     def _tavily_web_search(self, query: str, top_k: int) -> List[tuple]:
         api_key = os.getenv("TAVILY_API_KEY", "").strip()
@@ -28,13 +28,13 @@ class Retriever(Agent):
             raise RuntimeError("TAVILY_API_KEY is not set. External route cannot run.")
 
         endpoint = os.getenv("TAVILY_ENDPOINT", "https://api.tavily.com/search")
-        timeout = float(os.getenv("TAVILY_TIMEOUT", "12"))
-        payload = {
-            "api_key": api_key,
-            "query": query,
-            "max_results": int(top_k),
-            "search_depth": "basic",
-            "include_answer": False,
+        timeout  = float(os.getenv("TAVILY_TIMEOUT", "12"))
+        payload  = {
+            "api_key":           api_key,
+            "query":             query,
+            "max_results":       int(top_k),
+            "search_depth":      "basic",
+            "include_answer":    False,
             "include_raw_content": False,
         }
 
@@ -42,63 +42,85 @@ class Retriever(Agent):
         response.raise_for_status()
         data = response.json()
 
-        results = data.get("results") or []
         chunks: List[tuple] = []
-        for item in results:
-            title = str(item.get("title") or "")
+        for item in (data.get("results") or []):
+            title   = str(item.get("title") or "")
             snippet = str(item.get("content") or "").strip()
-            url = str(item.get("url") or "web")
-            text = f"{title}\n{snippet}".strip()
+            url     = str(item.get("url") or "web")
+            score   = float(item.get("score") or 0.0)    # Tavily relevance score 0–1
+            text    = f"{title}\n{snippet}".strip()
             if text:
-                chunks.append((text, url, 0, 0.0))
+                # Store Tavily's own relevance score as distance proxy
+                chunks.append((text, url, 0, 1.0 - score))
 
         return chunks
 
+    @staticmethod
+    def _filter_external_chunks(chunks: List[tuple], min_content_len: int = 80) -> List[tuple]:
+        """
+        Remove web results that are too short to be useful (titles-only, empty snippets).
+        The Tavily relevance score is stored as 1 - score in the dist field;
+        filter out results with dist > 0.75 (i.e. Tavily score < 0.25).
+        """
+        filtered = []
+        for chunk in chunks:
+            try:
+                text, source, page, dist = chunk
+            except (TypeError, ValueError):
+                continue
+            if len(text.strip()) >= min_content_len and dist <= 0.75:
+                filtered.append(chunk)
+        return filtered or chunks   # fall back to all if everything was filtered
+
     def run(self, state: dict) -> dict:
+        """Internal retrieval — fetches the full candidate pool for the evaluator."""
         query = state.get("refined_query") or state["query"]
+
         candidates = self.retrieve_fn(query, top_k=self.top_n)
 
         state["chunks_candidates"] = candidates
+        # Provide a default top_k slice; DPS will override state["chunks"] if enabled.
         state["chunks"] = candidates[: self.top_k]
 
         Agent._trace(
             state,
             self.name,
-            f"Retrieved {len(candidates)} internal candidates, {len(state['chunks'])} kept.",
-            {
-                "query_used": query,
-                "top_n": self.top_n,
-                "top_k": self.top_k,
-            },
+            f"Retrieved {len(candidates)} internal candidates, {len(state['chunks'])} pre-selected.",
+            {"query_used": query, "top_n": self.top_n, "top_k": self.top_k},
         )
         return state
 
     def run_external(self, state: dict) -> dict:
-        status = (state.get("crag_status") or "").strip()
-        if status not in {"Incorrect", "Ambiguous"}:
-            state["external_chunks"] = []
+        """External web retrieval for Incorrect / Ambiguous CRAG routes."""
+        crag_status = (state.get("crag_status") or "").strip()
+        if crag_status not in {"Incorrect", "Ambiguous"}:
+            state["external_chunks"]         = []
             state["external_retrieved_meta"] = []
             Agent._trace(state, self.name, "Skipped external route (CRAG status is Correct).")
             return state
 
         query = state.get("refined_query") or state["query"]
+
         try:
-            web_chunks = self.web_search_fn(query, self.external_top_k)
+            raw_chunks = self.web_search_fn(query, self.external_top_k)
         except Exception as exc:
-            state["external_chunks"] = []
+            state["external_chunks"]         = []
             state["external_retrieved_meta"] = []
-            state["external_error"] = str(exc)
+            state["external_error"]          = str(exc)
             Agent._trace(state, self.name, f"External route failed: {exc}")
             return state
+
+        # Filter out low-quality / too-short web results
+        web_chunks = self._filter_external_chunks(raw_chunks)
 
         state["external_chunks"] = web_chunks
         state["external_retrieved_meta"] = [
             {
-                "text": text,
+                "text":     text,
+                "source":   source,
+                "page":     page,
                 "distance": dist,
-                "source": source,
-                "page": page,
-                "route": "external",
+                "route":    "external",
             }
             for text, source, page, dist in web_chunks
         ]
@@ -106,10 +128,8 @@ class Retriever(Agent):
         Agent._trace(
             state,
             self.name,
-            f"External route returned {len(web_chunks)} web passages.",
-            {
-                "query_used": query,
-                "external_top_k": self.external_top_k,
-            },
+            f"External route returned {len(web_chunks)} usable web passages "
+            f"({len(raw_chunks)} raw results).",
+            {"query_used": query, "external_top_k": self.external_top_k},
         )
         return state
