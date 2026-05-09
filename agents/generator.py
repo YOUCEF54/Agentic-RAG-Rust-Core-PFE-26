@@ -27,14 +27,28 @@ class Generator(Agent):
         return f"[source: {source} | page: {page}]\n{text}"
 
     @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """
+        Split text into sentences without breaking on common abbreviations.
+        The naive `(?<=[.!?])\\s+` pattern splits on "et al. 2024", "Fig. 3",
+        "e.g. something", etc. This version protects known abbreviations first.
+        """
+        # Common academic/technical abbreviations that should not trigger splits
+        abbrevs = r"(?:et al|e\.g|i\.e|vs|fig|eq|sec|ref|no|vol|pp|approx|dept|prof|dr|mr|ms)"
+        # Temporarily replace abbreviation periods with a placeholder
+        protected = re.sub(rf"({abbrevs})\.", r"\1<DOT>", text, flags=re.IGNORECASE)
+        # Split on sentence boundaries: period/!/? followed by whitespace + capital
+        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", protected)
+        # Restore placeholders
+        return [s.replace("<DOT>", ".") for s in sentences]
+
+    @staticmethod
     def _refine_passages(query: str, chunks: list[tuple]) -> str:
         """
-        Knowledge refinement as described in the CRAG paper:
-        Strip sentences that share no significant tokens with the query,
-        keeping sentences that are directly relevant.
-
-        This is deterministic (no extra LLM call), fast, and doesn't risk
-        losing or paraphrasing facts the way an LLM rewrite would.
+        Deterministic knowledge refinement (CRAG paper §3.2):
+        Keep only sentences that share at least one significant token with the query.
+        No LLM call — fast, lossless, no hallucination risk.
+        Falls back to the full chunk if filtering is too aggressive.
         """
         if not chunks:
             return ""
@@ -46,19 +60,15 @@ class Generator(Agent):
             try:
                 text, source, page, _dist = chunk
             except (TypeError, ValueError):
-                text   = str(chunk)
-                source = "unknown"
-                page   = 0
+                text, source, page = str(chunk), "unknown", 0
 
-            kept_sentences: list[str] = []
-            for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
-                sentence_tokens = set(re.findall(r"\b\w{3,}\b", sentence.lower()))
-                if sentence_tokens & query_tokens:
-                    kept_sentences.append(sentence)
+            kept: list[str] = []
+            for sentence in Generator._split_sentences(text.strip()):
+                s_tokens = set(re.findall(r"\b\w{3,}\b", sentence.lower()))
+                if s_tokens & query_tokens:
+                    kept.append(sentence)
 
-            # If the filter was too aggressive, keep the whole chunk rather than
-            # returning empty (e.g. chunk has no keyword overlap but is still useful)
-            body = " ".join(kept_sentences) if kept_sentences else text
+            body = " ".join(kept) if kept else text   # fallback: keep whole chunk
             refined_parts.append(f"[source: {source} | page: {page}]\n{body}")
 
         return "\n\n".join(refined_parts)
@@ -97,7 +107,7 @@ class Generator(Agent):
                 f"External Web Context:\n{external_context}"
             )
 
-        else:  # Ambiguous — combine both sources
+        else:  # Ambiguous
             refined_context  = self._refine_passages(query, internal_chunks)
             external_context = self._build_external_context(external_chunks)
             route_desc       = "hybrid_internal_external"

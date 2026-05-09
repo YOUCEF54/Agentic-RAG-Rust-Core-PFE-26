@@ -9,15 +9,12 @@ class CRAGEvaluator(Agent):
     """
     CRAG retrieval-quality evaluator (Yan et al., 2024).
 
-    Scores each retrieved passage individually against the query, then
-    classifies the overall retrieval batch as:
+    Classifies the overall retrieval batch as:
         Correct   — at least one passage is highly relevant
         Ambiguous — passages are partially relevant or uncertain
         Incorrect — no passage is sufficiently relevant
 
-    IMPORTANT: This evaluator must run BEFORE DynamicPassageSelector so it
-    sees the full candidate pool. DPS then filters down to the passages the
-    evaluator already confirmed are relevant.
+    Must run BEFORE DynamicPassageSelector so it sees the full candidate pool.
     """
 
     def __init__(
@@ -54,25 +51,67 @@ class CRAGEvaluator(Agent):
             return default
         return max(0.0, min(1.0, f))
 
+    @staticmethod
+    def _extract_json(raw: str) -> dict | None:
+        """
+        Robustly extract a JSON object from an LLM response.
+        Handles: bare JSON, markdown fences (```json ... ```),
+        preamble text before the object, trailing text after.
+        """
+        if not raw:
+            return None
+
+        # 1. Strip markdown code fences (```json ... ``` or ``` ... ```)
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if fenced:
+            candidate = fenced.group(1)
+        else:
+            # 2. Find the first { ... } block in the raw string
+            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            candidate = brace_match.group(0) if brace_match else raw.strip()
+
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        # 3. Last resort: try to repair common issues (trailing commas, single quotes)
+        repaired = re.sub(r",\s*([}\]])", r"\1", candidate)   # trailing commas
+        repaired = repaired.replace("'", '"')                   # single → double quotes
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
+
     def _parse_eval(self, raw: str) -> tuple[str, float, float, str]:
         default = ("Ambiguous", 0.5, 0.5, "Could not parse evaluator output reliably.")
 
-        # Try JSON first
-        try:
-            payload = json.loads(raw.strip())
-            if isinstance(payload, dict):
-                label      = self._normalize_label(str(payload.get("classification") or payload.get("label") or ""))
-                confidence = self._clamp(payload.get("confidence"), 0.5)
-                relevance  = self._clamp(payload.get("relevance_score"), 0.5)
-                reason     = str(payload.get("reason") or payload.get("summary") or "No reason provided.")
+        # ── Try structured JSON first (preferred path) ────────────────────────
+        payload = self._extract_json(raw)
+        if isinstance(payload, dict):
+            label      = self._normalize_label(
+                str(payload.get("classification") or payload.get("label") or "")
+            )
+            confidence = self._clamp(payload.get("confidence"), 0.5)
+            relevance  = self._clamp(payload.get("relevance_score"), 0.5)
+            reason     = str(
+                payload.get("reason") or payload.get("summary") or "No reason provided."
+            )
+            # Only accept if we got at least a meaningful label or score
+            if label != "Ambiguous" or relevance != 0.5 or confidence != 0.5:
                 return label, confidence, relevance, reason
-        except Exception:
-            pass
 
-        # Regex fallback
-        cls_match    = re.search(r"(?i)(classification|label)\s*[:=]\s*(correct|incorrect|ambiguous)", raw)
-        conf_match   = re.search(r"(?i)confidence\s*[:=]\s*([0-9]*\.?[0-9]+)", raw)
-        rel_match    = re.search(r"(?i)(relevance_score|score)\s*[:=]\s*([0-9]*\.?[0-9]+)", raw)
+        # ── Regex fallback — handles plain-text responses ─────────────────────
+        cls_match    = re.search(
+            r"(?i)(classification|label)\s*[:=]\s*(correct|incorrect|ambiguous)", raw
+        )
+        conf_match   = re.search(
+            r"(?i)confidence\s*[:=]\s*([0-9]*\.?[0-9]+)", raw
+        )
+        # Fixed: use a single capture group regardless of which keyword matched
+        rel_match    = re.search(
+            r"(?i)(?:relevance_score|relevance|score)\s*[:=]\s*([0-9]*\.?[0-9]+)", raw
+        )
         reason_match = re.search(r"(?i)reason\s*[:=]\s*(.+)", raw)
 
         if not cls_match and not conf_match and not rel_match:
@@ -80,54 +119,41 @@ class CRAGEvaluator(Agent):
 
         label      = self._normalize_label(cls_match.group(2) if cls_match else "Ambiguous")
         confidence = self._clamp(conf_match.group(1) if conf_match else 0.5, 0.5)
-        relevance  = self._clamp(rel_match.group(2) if rel_match else 0.5, 0.5)
-        reason     = reason_match.group(1).strip() if reason_match else "Parsed from non-JSON evaluator output."
+        # Fixed: always group(1) — single capture group
+        relevance  = self._clamp(rel_match.group(1) if rel_match else 0.5, 0.5)
+        reason     = (
+            reason_match.group(1).strip()
+            if reason_match
+            else "Parsed from non-JSON evaluator output."
+        )
         return label, confidence, relevance, reason
 
     def _route(self, llm_label: str, relevance_score: float, confidence: float) -> str:
-        """
-        Combine the LLM's classification with threshold logic and confidence.
-
-        Confidence is now used:
-          - High relevance but low confidence  → Ambiguous (don't fully trust)
-          - LLM says Correct but score is below ambiguous_threshold → override to Incorrect
-          - Otherwise the threshold-based label is the primary signal, but if the
-            LLM agrees it upgrades a borderline Ambiguous to Correct / Incorrect.
-        """
         threshold_label = (
             "Correct"   if relevance_score >= self.correct_threshold   else
             "Incorrect" if relevance_score <  self.ambiguous_threshold  else
             "Ambiguous"
         )
-
-        # High relevance but the LLM isn't confident — stay cautious
+        # High relevance but low confidence → stay cautious
         if relevance_score >= self.correct_threshold and confidence < 0.5:
             return "Ambiguous"
-
-        # Both signals agree — high confidence
+        # Both signals agree
         if threshold_label == llm_label:
             return threshold_label
-
-        # Disagreement: trust the threshold but let LLM break ties in the
-        # Ambiguous band (between thresholds)
-        if threshold_label == "Ambiguous":
-            if llm_label in {"Correct", "Incorrect"}:
-                return llm_label  # LLM has a stronger opinion, use it
-
-        # In all other cases the deterministic threshold wins
+        # LLM breaks ties in the Ambiguous band
+        if threshold_label == "Ambiguous" and llm_label in {"Correct", "Incorrect"}:
+            return llm_label
         return threshold_label
 
     def run(self, state: dict) -> dict:
         state["attempts"] = int(state.get("attempts", 0)) + 1
 
-        query = state.get("refined_query") or state["query"]
-        # Evaluate the FULL candidate pool, not the already-filtered chunks.
-        # DPS runs after us and does the final selection.
+        query      = state.get("refined_query") or state["query"]
         candidates = state.get("chunks_candidates") or state.get("chunks", [])
 
         if not candidates:
             state.update({
-                "score":               0.0,
+                "score":                0.0,
                 "crag_relevance_score": 0.0,
                 "crag_confidence":      1.0,
                 "crag_status":         "Incorrect",
@@ -147,13 +173,17 @@ class CRAGEvaluator(Agent):
         prompt = (
             "You are a CRAG retrieval-quality evaluator.\n"
             "Assess whether the retrieved passages are sufficient and relevant to answer the question.\n\n"
-            "Return STRICT JSON with exactly these keys:\n"
-            "  classification : Correct | Ambiguous | Incorrect\n"
-            "  confidence     : float 0..1  (how certain you are of your classification)\n"
-            "  relevance_score: float 0..1  (how relevant the BEST passage is to the question)\n"
-            "  reason         : one short sentence\n\n"
+            "Return ONLY a JSON object with exactly these four keys — no explanation, no markdown:\n"
+            '  "classification": "Correct" | "Ambiguous" | "Incorrect"\n'
+            '  "confidence":     float between 0 and 1\n'
+            '  "relevance_score": float between 0 and 1\n'
+            '  "reason":         one short sentence\n\n'
+            "Example of valid output:\n"
+            '{"classification": "Correct", "confidence": 0.9, "relevance_score": 0.85, '
+            '"reason": "Passage 2 directly answers the question."}\n\n'
             f"Question:\n{query}\n\n"
-            f"Retrieved Passages:\n{packed_context}"
+            f"Retrieved Passages:\n{packed_context}\n\n"
+            "JSON output:"
         )
 
         model_used = None
@@ -161,10 +191,10 @@ class CRAGEvaluator(Agent):
             raw, model_used = self.chat_fn([{"role": "user", "content": prompt}])
             llm_label, confidence, relevance_score, reason = self._parse_eval(raw)
         except Exception as exc:
-            llm_label      = "Ambiguous"
-            confidence     = 0.5
+            llm_label       = "Ambiguous"
+            confidence      = 0.5
             relevance_score = 0.5
-            reason         = f"Evaluator call failed: {exc}"
+            reason          = f"Evaluator call failed: {exc}"
 
         routed_label = self._route(llm_label, relevance_score, confidence)
 

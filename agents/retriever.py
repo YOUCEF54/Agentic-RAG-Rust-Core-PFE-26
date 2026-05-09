@@ -30,11 +30,11 @@ class Retriever(Agent):
         endpoint = os.getenv("TAVILY_ENDPOINT", "https://api.tavily.com/search")
         timeout  = float(os.getenv("TAVILY_TIMEOUT", "12"))
         payload  = {
-            "api_key":           api_key,
-            "query":             query,
-            "max_results":       int(top_k),
-            "search_depth":      "basic",
-            "include_answer":    False,
+            "api_key":             api_key,
+            "query":               query,
+            "max_results":         int(top_k),
+            "search_depth":        "basic",
+            "include_answer":      False,
             "include_raw_content": False,
         }
 
@@ -47,21 +47,14 @@ class Retriever(Agent):
             title   = str(item.get("title") or "")
             snippet = str(item.get("content") or "").strip()
             url     = str(item.get("url") or "web")
-            score   = float(item.get("score") or 0.0)    # Tavily relevance score 0–1
+            score   = float(item.get("score") or 0.0)
             text    = f"{title}\n{snippet}".strip()
             if text:
-                # Store Tavily's own relevance score as distance proxy
                 chunks.append((text, url, 0, 1.0 - score))
-
         return chunks
 
     @staticmethod
     def _filter_external_chunks(chunks: List[tuple], min_content_len: int = 80) -> List[tuple]:
-        """
-        Remove web results that are too short to be useful (titles-only, empty snippets).
-        The Tavily relevance score is stored as 1 - score in the dist field;
-        filter out results with dist > 0.75 (i.e. Tavily score < 0.25).
-        """
         filtered = []
         for chunk in chunks:
             try:
@@ -70,23 +63,30 @@ class Retriever(Agent):
                 continue
             if len(text.strip()) >= min_content_len and dist <= 0.75:
                 filtered.append(chunk)
-        return filtered or chunks   # fall back to all if everything was filtered
+        return filtered or chunks
 
     def run(self, state: dict) -> dict:
-        """Internal retrieval — fetches the full candidate pool for the evaluator."""
+        """
+        Internal retrieval.
+        We pass top_k (the final desired count) to retrieve_fn.
+        main.py's closure handles Dartboard oversampling internally —
+        passing top_n here would double-oversample and fetch far more
+        candidates than needed.
+        """
         query = state.get("refined_query") or state["query"]
 
-        candidates = self.retrieve_fn(query, top_k=self.top_n)
+        # Fixed: pass top_k, not top_n — Dartboard oversampling is inside retrieve_fn
+        candidates = self.retrieve_fn(query, top_k=self.top_k)
 
         state["chunks_candidates"] = candidates
-        # Provide a default top_k slice; DPS will override state["chunks"] if enabled.
+        # DPS will override state["chunks"] if enabled; this is the plain fallback
         state["chunks"] = candidates[: self.top_k]
 
         Agent._trace(
             state,
             self.name,
             f"Retrieved {len(candidates)} internal candidates, {len(state['chunks'])} pre-selected.",
-            {"query_used": query, "top_n": self.top_n, "top_k": self.top_k},
+            {"query_used": query, "top_k": self.top_k},
         )
         return state
 
@@ -100,7 +100,6 @@ class Retriever(Agent):
             return state
 
         query = state.get("refined_query") or state["query"]
-
         try:
             raw_chunks = self.web_search_fn(query, self.external_top_k)
         except Exception as exc:
@@ -110,18 +109,11 @@ class Retriever(Agent):
             Agent._trace(state, self.name, f"External route failed: {exc}")
             return state
 
-        # Filter out low-quality / too-short web results
         web_chunks = self._filter_external_chunks(raw_chunks)
 
         state["external_chunks"] = web_chunks
         state["external_retrieved_meta"] = [
-            {
-                "text":     text,
-                "source":   source,
-                "page":     page,
-                "distance": dist,
-                "route":    "external",
-            }
+            {"text": text, "source": source, "page": page, "distance": dist, "route": "external"}
             for text, source, page, dist in web_chunks
         ]
 
