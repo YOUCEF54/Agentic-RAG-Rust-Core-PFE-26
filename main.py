@@ -142,7 +142,7 @@ SELECTOR_MODEL  = os.getenv("SELECTOR_MODEL",  "mistral:7b")
 
 # DPS (Dynamic Passage Selection)
 DPS_ENABLED     = True
-TOP_N_RETRIEVAL = 15    # candidates fetched from vector DB
+TOP_N_RETRIEVAL = get_env_int("TOP_N_RETRIEVAL",15)    # candidates fetched from vector DB
 TOP_K_MAX       = 8     # hard ceiling for DPS
 TOP_K_MIN       = 1     # hard floor for DPS
 
@@ -541,7 +541,7 @@ def load_and_chunk_pdfs(max_pages: Optional[int]) -> tuple[List[str], List[str],
                     text=text,
                     max_chars=CHUNK_CONFIG["max_chars"],
                     window_size=CHUNK_CONFIG["window_size"],
-                    threshold_percentile=CHUNK_CONFIG["threshold_percentile"]
+                    # threshold_percentile=CHUNK_CONFIG["threshold_percentile"]
                 )
                 
       for chunk_text in page_chunks:

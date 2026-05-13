@@ -68,15 +68,15 @@ class Retriever(Agent):
     def run(self, state: dict) -> dict:
         """
         Internal retrieval.
-        We pass top_k (the final desired count) to retrieve_fn.
-        main.py's closure handles Dartboard oversampling internally —
-        passing top_n here would double-oversample and fetch far more
-        candidates than needed.
+        Fetch a larger candidate pool (top_n) so DPS can choose from it,
+        while keeping a deterministic top_k fallback when DPS is disabled.
         """
         query = state.get("refined_query") or state["query"]
 
-        # Fixed: pass top_k, not top_n — Dartboard oversampling is inside retrieve_fn
-        candidates = self.retrieve_fn(query, top_k=self.top_k)
+        # Retrieve candidate pool for selector (DPS).
+        # Ensure the candidate count is never below the final top_k.
+        effective_top_n = max(int(self.top_n), int(self.top_k))
+        candidates = self.retrieve_fn(query, top_k=effective_top_n)
 
         state["chunks_candidates"] = candidates
         # DPS will override state["chunks"] if enabled; this is the plain fallback
@@ -86,7 +86,7 @@ class Retriever(Agent):
             state,
             self.name,
             f"Retrieved {len(candidates)} internal candidates, {len(state['chunks'])} pre-selected.",
-            {"query_used": query, "top_k": self.top_k},
+            {"query_used": query, "top_k": self.top_k, "top_n": effective_top_n},
         )
         return state
 

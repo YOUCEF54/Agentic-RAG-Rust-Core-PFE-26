@@ -34,6 +34,7 @@ class DynamicPassageSelector(Agent):
             f"{passages_text}\n\n"
             "### Response:\n"
         )
+        print("Prompt: ", prompt)
         
         return prompt
 

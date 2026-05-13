@@ -32,7 +32,8 @@ use dotenvy::dotenv; // added
 mod dartboard;   // Dartboard re-ranking — src/dartboard.rs
 
 const MIN_CHUNK_CHARS: usize = 80;
-static EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new(); // added
+static RETRIEVAL_EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
+static CHUNKING_EMBEDDER: OnceCell<Mutex<TextEmbedding>> = OnceCell::new();
 static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 // zembed config
 const ZE_EMBED_MODEL: &str = "zembed-1";
@@ -49,14 +50,14 @@ fn get_runtime() -> &'static Runtime {
 }
 
 // added (local-embed)
-fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
+fn get_retrieval_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
     let _ = dotenvy::dotenv();
     
     // 1. Get the model name from env, defaulting to BGE if not set
     let model_name_str = std::env::var("EMBED_MODEL")
         .unwrap_or_else(|_| "BGESmallENV15".to_string());
 
-    EMBEDDER.get_or_try_init(|| {
+    RETRIEVAL_EMBEDDER.get_or_try_init(|| {
         std::env::set_var("TOKENIZERS_PARALLELISM", "false");
 
         // 2. Map the string to the fastembed Enum
@@ -76,10 +77,23 @@ fn get_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
     })
 }
 
+fn get_chunking_embedder() -> Result<&'static Mutex<TextEmbedding>, String> {
+    CHUNKING_EMBEDDER.get_or_try_init(|| {
+        std::env::set_var("TOKENIZERS_PARALLELISM", "false");
+
+        let mut options = InitOptions::default();
+        options.model_name = EmbeddingModel::MultilingualE5Small;
+
+        TextEmbedding::try_new(options)
+            .map(Mutex::new)
+            .map_err(|e| format!("Fastembed init failed: {e:?}"))
+    })
+}
+
 // added (local-embed)
 #[pyfunction]
 fn load_embed_model_local() -> PyResult<()> {
-    get_embedder()
+    get_retrieval_embedder()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
     Ok(())
 }
@@ -186,7 +200,7 @@ fn embed_texts_rust_local(py: Python<'_>, texts: Vec<String>, embed_batch_size: 
 
     // 2. Release the GIL for the entire CPU-bound embedding process
     let embeddings = py.allow_threads(|| {
-        let embedder = get_embedder()?;
+        let embedder = get_retrieval_embedder()?;
         let mut guard = embedder.lock().map_err(|_| "Embedder mutex poisoned")?;
 
         guard.embed(texts, Some(batch_size))
@@ -239,10 +253,7 @@ fn is_reference_page(text: &str) -> bool {
     
     if non_empty_lines.is_empty() { return false; }
     
-    let ref_lines = non_empty_lines.iter().filter(|l| {
-        l.starts_with('[') 
-        && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
-    }).count();
+    let ref_lines = non_empty_lines.iter().filter(|l| looks_like_reference_line(l)).count();
 
     // Also catch pages starting with "REFERENCES" header
     let has_ref_header = non_empty_lines.iter()
@@ -267,14 +278,147 @@ fn is_reference_paragraph(para: &str) -> bool {
         return u == "REFERENCES" || u == "BIBLIOGRAPHY";
     }
 
-    let ref_lines = lines.iter().filter(|l| {
-        l.starts_with('[')
-            && l.len() > 3
-            && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
-    }).count();
+    let ref_lines = lines.iter().filter(|l| looks_like_reference_line(l)).count();
 
     // >60% of lines look like "[N] Author..." → reference paragraph
     ref_lines * 100 / lines.len() > 60
+}
+
+fn is_probable_pdf_result_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.is_empty() {
+        return false;
+    }
+    let lower = l.to_lowercase();
+
+    // file marker: "xxxxx.pdf"
+    if lower.ends_with(".pdf") && lower.contains(".pdf") && l.len() < 120 {
+        return true;
+    }
+
+    // page marker: "p.20" / "p. 20"
+    if let Some(rest) = lower.strip_prefix("p.") {
+        let cleaned: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+        if !cleaned.is_empty() && cleaned.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+
+    // score marker: "0.84"
+    if l.len() <= 6 && l.starts_with("0.") && l.chars().skip(2).all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+
+    false
+}
+
+fn looks_like_reference_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.is_empty() {
+        return false;
+    }
+
+    // [12] Author ...
+    if l.starts_with('[')
+        && l.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+    {
+        return true;
+    }
+
+    let lower = l.to_lowercase();
+    let year_hits = ["201", "202", "199"].iter().filter(|y| lower.contains(**y)).count();
+
+    // Common scholarly citation signals.
+    let citation_signals = [
+        "arxiv:",
+        "doi:",
+        "proceedings",
+        "transactions",
+        "journal",
+        "acm",
+        "ieee",
+        "springer",
+        "et al.",
+        "preprint",
+        "conference",
+    ];
+    let signal_hits = citation_signals.iter().filter(|s| lower.contains(**s)).count();
+
+    // Multi-author style list: "A.; B.; C."
+    let semicolon_count = l.matches(';').count();
+
+    (signal_hits >= 2 && year_hits >= 1)
+        || (lower.contains("arxiv:") && year_hits >= 1)
+        || (semicolon_count >= 2 && year_hits >= 1)
+}
+
+fn is_low_signal_line(line: &str) -> bool {
+    let l = line.trim();
+    if l.is_empty() {
+        return true;
+    }
+    if is_probable_pdf_result_line(l) {
+        return true;
+    }
+
+    let lower = l.to_lowercase();
+    if lower.starts_with("arxiv:") {
+        return true;
+    }
+    if lower == "references" || lower == "bibliography" {
+        return true;
+    }
+    if looks_like_reference_line(l) && l.len() < 320 {
+        return true;
+    }
+
+    false
+}
+
+fn is_low_signal_sentence(sentence: &str) -> bool {
+    let s = sentence.trim();
+    if s.is_empty() {
+        return true;
+    }
+    if is_low_signal_line(s) {
+        return true;
+    }
+
+    // Very short snippets are usually headers/noise in academic PDFs.
+    if s.len() < 24 {
+        return true;
+    }
+    let lower = s.to_lowercase();
+
+    // Merged retrieval metadata often appears like: "<file>.pdf p.12 0.84 ..."
+    if let Some(pdf_idx) = lower.find(".pdf") {
+        if pdf_idx < 96 {
+            return true;
+        }
+    }
+
+    // Citation-style spans inside a larger sentence.
+    if lower.contains("arxiv:") && (s.matches(';').count() >= 1 || lower.contains("et al.")) {
+        return true;
+    }
+
+    let alpha = s.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    let digits = s.chars().filter(|c| c.is_ascii_digit()).count();
+    let punct = s.chars().filter(|c| !c.is_alphanumeric() && !c.is_whitespace()).count();
+    let len = s.chars().count().max(1);
+
+    let digit_ratio = digits as f32 / len as f32;
+    let punct_ratio = punct as f32 / len as f32;
+    let alpha_ratio = alpha as f32 / len as f32;
+
+    // Keep text-like sentences, drop metadata-like sequences.
+    // (alpha_ratio < 0.35 && (digit_ratio > 0.20 || punct_ratio > 0.30))
+    if s.len() > 120 {
+    return false; // don't drop long sentences on ratio alone
+    }
+    (alpha_ratio < 0.35 && (digit_ratio > 0.20 || punct_ratio > 0.30))
+        || (looks_like_reference_line(s) && s.len() < 420)
+    
 }
 
 
@@ -334,7 +478,7 @@ fn clean_research_text(text: &str) -> String {
             let mut buf = String::new();
 
             for (i, &line) in lines.iter().enumerate() {
-                if line.is_empty() { continue; }
+                if is_low_signal_line(line) { continue; }
                 if line.ends_with('-') {
                     buf.push_str(&line[..line.len() - 1]);
                 } else {
@@ -529,12 +673,13 @@ fn calculate_dynamic_threshold(distances: &[f32], percentile: f32) -> f32 {
     let mut sorted = distances.to_vec();
     // Sort safely (floats can be tricky, but cosine distances are usually well-behaved)
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    
-    let index = ((sorted.len() - 1) as f32 * percentile) as usize;
+
+    let p = percentile.clamp(0.0, 1.0);
+    let index = ((sorted.len() - 1) as f32 * p) as usize;
     sorted[index]
 }
 
-// Fallback: A simple version of your previous logic for oversized semantic chunks
+// Fallback: A simple version of previous logic for oversized semantic chunks
 fn simple_sliding_window(text: &str, max_chars: usize) -> Vec<String> {
     let sentences = split_sentences(text);
     let mut chunks = Vec::new();
@@ -555,31 +700,45 @@ fn simple_sliding_window(text: &str, max_chars: usize) -> Vec<String> {
     }
     chunks
 }
-use anyhow::Error;
 #[pyfunction]
 fn semantic_window_chunker_advanced(
     text: String,
     max_chars: usize,
     window_size: usize,
-    threshold_percentile: f32,
     ) -> PyResult<Vec<String>> {
     let stripped = strip_academic_header(&text);
-    let sentences = split_sentences(stripped);
-    if sentences.len() < window_size {
-        return Ok(vec![sentences.join(" ")]);
+    let max_chars = max_chars.max(MIN_CHUNK_CHARS);
+    let window_size = window_size.max(2);
+    let sentences: Vec<String> = split_sentences(stripped)
+        .into_iter()
+        .filter(|s| !is_low_signal_sentence(s))
+        .collect();
+
+    if sentences.is_empty() {
+        return Ok(Vec::new());
     }
 
-    // FIX E0639: Initialize non-exhaustive struct
-    let model_mutex = EMBEDDER.get_or_init(|| {
-        let mut options = InitOptions::default();
-        // options.model_name = EmbeddingModel::AllMiniLML6V2;
-        // options.model_name = EmbeddingModel::SnowflakeArcticEmbedXS; 
-        options.model_name = EmbeddingModel::MultilingualE5Small;
-        let m = TextEmbedding::try_new(options)
-            .expect("Failed to initialize FastEmbed model");
-        Mutex::new(m)
-    });
-    // 2. Verrouillage du Mutex et extraction du garde
+    if sentences.len() < window_size {
+        let joined = sentences.join(" ");
+        if joined.len() > max_chars {
+            return Ok(
+                simple_sliding_window(&joined, max_chars)
+                    .into_iter()
+                    .filter(|c| c.trim().len() >= MIN_CHUNK_CHARS)
+                    .collect(),
+            );
+        }
+        return Ok(
+            if joined.trim().len() >= MIN_CHUNK_CHARS {
+                vec![joined]
+            } else {
+                Vec::new()
+            }
+        );
+    }
+
+    let model_mutex = get_chunking_embedder()
+        .map_err(PyRuntimeError::new_err)?;
     let mut model_guard = model_mutex.lock().map_err(|e| {
         PyRuntimeError::new_err(format!("Mutex lock failed: {}", e))
     })?;
@@ -591,8 +750,9 @@ fn semantic_window_chunker_advanced(
         .collect();
 
     // 2. Embed Windows
-    let window_embeddings = model_guard.embed(windows, None)
-            .map_err(|e: anyhow::Error| PyRuntimeError::new_err(e.to_string()))?;
+    let window_embeddings = model_guard
+        .embed(windows, None)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     // 3. Calculate "Distance" between consecutive windows
     let mut distances = Vec::new();
     for i in 0..window_embeddings.len() - 1 {
@@ -600,12 +760,70 @@ fn semantic_window_chunker_advanced(
         distances.push(dist);
     }
 
-    // 4. Identify Break Points
-    let threshold = calculate_dynamic_threshold(&distances, threshold_percentile);
+    // // 4. Identify Break Points
+    // let threshold = calculate_dynamic_threshold(&distances, threshold_percentile);
+    // let mut break_points = Vec::new();
+    // let min_gap = (window_size / 2).max(2);
+    // let mut last_bp: Option<usize> = None;
+    // for (i, &dist) in distances.iter().enumerate() {
+    //     if dist > threshold {
+    //         // let candidate = i + (window_size / 2);
+    //         let candidate = i + 1; // clean boundary after sentence i
+    //         let can_push = match last_bp {
+    //             Some(prev) => candidate >= prev + min_gap,
+    //             None => true,
+    //         };
+    //         if can_push && candidate < sentences.len() {
+    //             break_points.push(candidate);
+    //             last_bp = Some(candidate);
+    //         }
+    //     }
+    // }
+
+
+    // 4. Identify Break Points (Adaptive Gradient/Rolling Window)
+    // Instead of a global percentile, we calculate a local moving average
+    // and standard deviation to find *local* spikes in semantic distance.
     let mut break_points = Vec::new();
-    for (i, &dist) in distances.iter().enumerate() {
-        if dist > threshold {
-            break_points.push(i + (window_size / 2)); 
+    // let min_gap = (window_size / 2).max(2);
+    let min_gap = 1;
+    let mut last_bp: Option<usize> = None;
+
+    // Define the neighborhood size for the rolling window (e.g., look at 3 distances before and after)
+    let neighborhood = 3; 
+
+    for i in 0..distances.len() {
+        let dist = distances[i];
+
+        // Calculate boundaries for the local window
+        let start_idx = i.saturating_sub(neighborhood);
+        let end_idx = (i + neighborhood + 1).min(distances.len());
+        let local_slice = &distances[start_idx..end_idx];
+
+        // Calculate local mean
+        let local_mean: f32 = local_slice.iter().sum::<f32>() / local_slice.len() as f32;
+        
+        // Calculate local standard deviation
+        let variance: f32 = local_slice.iter().map(|&x| (x - local_mean).powi(2)).sum::<f32>() / local_slice.len() as f32;
+        let local_std_dev = variance.sqrt();
+
+        // The adaptive threshold: Mean + (Multiplier * StdDev)
+        // A multiplier of 1.5 is a standard statistical anomaly detector.
+        // You can expose this multiplier as a parameter to Python if you want to tune it.
+        let threshold_multiplier = 1.5; 
+        let local_threshold = local_mean + (threshold_multiplier * local_std_dev);
+
+        // If the current distance spikes above the local threshold, it's a semantic break.
+        if dist > local_threshold {
+            let candidate = i + 1; // clean boundary after sentence i
+            let can_push = match last_bp {
+                Some(prev) => candidate >= prev + min_gap,
+                None => true,
+            };
+            if can_push && candidate < sentences.len() {
+                break_points.push(candidate);
+                last_bp = Some(candidate);
+            }
         }
     }
 
@@ -619,7 +837,7 @@ fn semantic_window_chunker_advanced(
         
         if chunk_text.len() > max_chars {
             chunks.extend(simple_sliding_window(&chunk_text, max_chars));
-        } else if !chunk_text.is_empty() {
+        } else if chunk_text.trim().len() >= MIN_CHUNK_CHARS {
             chunks.push(chunk_text);
         }
         current_start = bp + 1;
@@ -629,7 +847,7 @@ fn semantic_window_chunker_advanced(
         let tail = sentences[current_start..].join(" ");
         if tail.len() > max_chars {
             chunks.extend(simple_sliding_window(&tail, max_chars));
-        } else {
+        } else if tail.trim().len() >= MIN_CHUNK_CHARS {
             chunks.push(tail);
         }
     }
