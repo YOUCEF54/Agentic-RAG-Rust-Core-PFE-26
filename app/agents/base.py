@@ -15,14 +15,14 @@ class Agent:
         message: str,
         data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        trace = state.get("trace")
-        if trace is None:
-            trace = None
         item = {"agent": agent, "message": message}
         if data:
             item["data"] = data
-        if trace is not None:
+        # Append to trace list if tracing is enabled (trace=[] enables, trace=None disables)
+        trace = state.get("trace")
+        if isinstance(trace, list):
             trace.append(item)
+        # Fire streaming emit hook if present (used by /query/stream in main.py)
         emit = state.get("emit")
-        if emit:
+        if callable(emit):
             emit(item)
