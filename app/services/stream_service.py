@@ -12,6 +12,7 @@ from app.agents.orchestrator import AgentOrchestrator
 from app.core import config, runtime_state
 from app.services.chat_service import backend_chat
 from app.schemas.api import QueryRequest, QueryResponse
+from app.services.query_mode_service import naive_result, retrieval_only_result
 from app.services.retrieval_service import retrieve_chunks_with_meta
 
 
@@ -27,50 +28,21 @@ def run_query_stream(payload: QueryRequest):
         yield _sse_event("status", {"state": "started"})
         try:
             if not payload.use_llm:
-                _, meta = retrieve_chunks_with_meta(
-                    payload.question,
-                    payload.top_k,
-                    dartboard_sigma=payload.dartboard_sigma,
-                )
-                yield _sse_event("retrieved", {"items": meta})
-                yield _sse_event("final", {"mode": "retrieval_only", "retrieved": meta})
+                result = retrieval_only_result(payload.question, payload.top_k, payload.dartboard_sigma)
+                yield _sse_event("retrieved", {"items": result.get("retrieved") or []})
+                yield _sse_event("final", result)
                 return
 
             if payload.mode.lower() == "naive":
-                _, meta = retrieve_chunks_with_meta(
-                    payload.question,
-                    payload.top_k,
+                result, answer, model_used, meta = naive_result(
+                    question=payload.question,
+                    top_k=payload.top_k,
+                    chat_model=payload.chat_model,
                     dartboard_sigma=payload.dartboard_sigma,
                 )
                 yield _sse_event("retrieved", {"items": meta})
-                context_text = "\n".join([f"- {row['text']}" for row in meta])
-                system_prompt = (
-                    "You are a helpful chatbot.\n"
-                    "Use only the following pieces of context to answer the question. "
-                    "Don't make up any new information:\n"
-                    f"{context_text}"
-                )
-                naive_model = payload.chat_model or (
-                    config.OPENROUTER_CHAT_MODEL if config.API_TYPE == "open_router" else config.OLLAMA_CHAT_MODEL
-                )
-                answer, model_used = backend_chat(
-                    [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": payload.question},
-                    ],
-                    model_override=naive_model,
-                )
                 yield _sse_event("answer", {"answer": answer, "model_used": model_used})
-                yield _sse_event(
-                    "final",
-                    {
-                        "mode": "naive",
-                        "answer": answer,
-                        "model_used": model_used,
-                        "retrieved": meta,
-                        "models": {"generator": model_used},
-                    },
-                )
+                yield _sse_event("final", result)
                 return
 
             pending: List[Dict[str, Any]] = []
