@@ -1,4 +1,4 @@
-use pyo3::exceptions::{PyIOError, PyRuntimeError};
+﻿use pyo3::exceptions::{PyIOError, PyRuntimeError};
 use pyo3::prelude::*;
 
 mod chunking;
@@ -21,20 +21,37 @@ fn load_embed_model_zembed() -> PyResult<()> {
 
 #[pyfunction]
 fn embed_texts_rust_zembed(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize) -> PyResult<Vec<Vec<f32>>> {
-    py.allow_threads(|| embeddings::embed_texts_rust_zembed_impl(texts, embed_batch_size))
-        .map_err(PyRuntimeError::new_err)
+    let embeddings = py.detach(|| {
+        embeddings::embed_texts_rust_zembed_impl(texts, embed_batch_size)
+    });
+    
+    // 1. Map the internal String error into a PyRuntimeError
+    // 2. Use '?' to extract the inner Vec<Vec<f32>> or return early if it's an Error
+    let successfully_embedded = embeddings.map_err(PyRuntimeError::new_err)?;
+    
+    Ok(successfully_embedded)
 }
 
 #[pyfunction]
 fn embed_texts_rust_local(py: Python<'_>, texts: Vec<String>, embed_batch_size: usize) -> PyResult<Vec<Vec<f32>>> {
-    py.allow_threads(|| embeddings::embed_texts_rust_local_impl(texts, embed_batch_size))
-        .map_err(PyRuntimeError::new_err)
+    let embeddings = py.detach(|| {
+         embeddings::embed_texts_rust_local_impl(texts, embed_batch_size)
+    });
+    
+    let successfully_embedded = embeddings.map_err(PyRuntimeError::new_err)?;
+    
+    Ok(successfully_embedded)
 }
 
 #[pyfunction]
 fn embed_query_rust_zembed(py: Python<'_>, query: String) -> PyResult<Vec<f32>> {
-    py.allow_threads(|| embeddings::embed_query_rust_zembed_impl(query))
-        .map_err(PyRuntimeError::new_err)
+    let embeddings = py.detach(|| {
+        embeddings::embed_query_rust_zembed_impl(query)
+    });
+    
+    let successfully_embedded = embeddings.map_err(PyRuntimeError::new_err)?;
+    
+    Ok(successfully_embedded)
 }
 
 #[pyfunction]
@@ -116,4 +133,3 @@ fn rag_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dartboard::dartboard_rerank, m)?)?;
     Ok(())
 }
-
